@@ -68,7 +68,13 @@ func getTLSClient() tls_client.HttpClient {
 		return c
 	}
 	opts := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(rtCfg().RequestTimeout),
+		// Timeout di sini adalah batas TOTAL, bukan idle. Model reasoning
+		// (Argon, 3.1 Pro thinking, 3.8 thinking) bisa butuh 3-8 menit untuk
+		// satu jawaban; dengan 180s klien diputus di tengah stream lalu
+		// seluruh request diulang, sehingga totalnya jadi 3x180 = 540s dan
+		// jawabannya hilang. Batas keras tetap ada (supaya tidak menggantung
+		// selamanya), tapi jauh di atas kebutuhan reasoning terpanjang.
+		tls_client.WithTimeoutSeconds(totalRequestBudget()),
 		tls_client.WithClientProfile(resolveProfile(rtCfg().Impersonate)),
 		tls_client.WithNotFollowRedirects(),
 	}
@@ -103,6 +109,30 @@ var (
 	stdlibClientCache sync.Map // proxyURL -> *http.Client
 )
 
+// totalRequestBudget adalah batas keras satu request end-to-end.
+//
+// Kenapa tidak memakai RequestTimeout langsung: http.Client.Timeout dan
+// tls_client.WithTimeoutSeconds mengukur TOTAL, termasuk membaca body. Model
+// reasoning (4 Argon, 3.1 Pro thinking, 3.8 Flash thinking) butuh 3-8 menit
+// untuk satu jawaban utuh. Dengan batas 180s, stream diputus di tengah lalu
+// seluruh request diulang dari nol: totalnya jadi 3x180 = 540s DAN jawabannya
+// hilang. Itu yang membuat model-model ini tampak "unresponsive" di 9router
+// padahal TTFB-nya cuma 1-2 detik.
+//
+// Batas atas tetap dipasang supaya request benar-benar mati tidak menggantung
+// selamanya. Kegagalan "upstream diam" ditangani ResponseHeaderTimeout, bukan
+// oleh angka ini.
+func totalRequestBudget() int {
+	b := rtCfg().RequestTimeout * 4
+	if b < 600 {
+		b = 600
+	}
+	if b > 3600 {
+		b = 3600
+	}
+	return b
+}
+
 // getStdlibClient returns an http.Client routed through proxyURL.
 // proxyURL must not be empty (caller checks).
 func getStdlibClient(proxyURL string) *http.Client {
@@ -116,12 +146,17 @@ func getStdlibClient(proxyURL string) *http.Client {
 		DisableCompression:  false,
 		// 走代理时不强求 HTTP/2，部分代理不支持。
 		ForceAttemptHTTP2: false,
+		// Upstream yang tidak kunjung mengirim header = mati. Ini yang harus
+		// gagal cepat, bukan respons panjang yang sedang streaming.
+		ResponseHeaderTimeout: time.Duration(rtCfg().RequestTimeout) * time.Second,
 	}
-	if u, err := url.Parse(proxyURL); err == nil {
+	if u, err := url.Parse(proxyURL); err == nil && u.Host != "" {
 		t.Proxy = http.ProxyURL(u)
 	}
 	c := &http.Client{
-		Timeout:   time.Duration(rtCfg().RequestTimeout) * time.Second,
+		// 0 = tanpa batas total; body stream panjang adalah hal normal di sini.
+		// Batas praktisnya datang dari ResponseHeaderTimeout di atas.
+		Timeout:   0,
 		Transport: t,
 		// 跟 tls-client 一致：不自动跟随重定向（302 是诊断信号）
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {

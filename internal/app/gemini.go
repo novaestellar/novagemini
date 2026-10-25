@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -50,6 +52,13 @@ const innerSlots = 97
 const (
 	thinkingNormal   = 1
 	thinkingExtended = 2
+
+	// Argon-class reasoning depth, encoded at index 15 of
+	// x-goog-ext-525001261-jspb. Values verified against the live web client:
+	// 1 = low / fast, 4 = medium / balanced, 2 = high / deep.
+	thinkLevelLow    = 1
+	thinkLevelMedium = 4
+	thinkLevelHigh   = 2
 )
 
 // ModelConfig holds the server-side model id plus the legacy MODE_CATEGORY value.
@@ -63,6 +72,9 @@ type ModelConfig struct {
 	// Thinking 为真时填 inner[80]=2，即网页 UI 上的「扩展思考」。跟 HexID 正交
 	// —— 三个模型都能开，不是某个专属模型。
 	Thinking bool
+	// ThinkLevel mengisi index 15 pada header x-goog-ext-525001261-jspb.
+	// 0 = tidak diisi (perilaku lama). 1/4/2 = low/medium/high untuk Argon.
+	ThinkLevel int
 	// Tool 非 0 时填 inner[49]，让服务端换后端模型生成媒体产物（14=生图 Nano Banana
 	// / 21=音乐 Lyria）。产物不在 StreamGenerate 响应里，要再走 hNvQHb 拿下载链、
 	// 用下载 host 认的 cookie 子集下回原始字节，见 media.go。跟登录态绑定：匿名请求
@@ -86,6 +98,9 @@ var Models = map[string]ModelConfig{
 	// 4 Argon（#35）：Mode=8 是真正的选择开关（见 hexArgon4 注释）。付费/Ultra 号专属，
 	// 免费号发它会被静默降级成 3.5 Flash-Lite，所以 gate 成要 cookie（modelNeedsLogin）。
 	"gemini-4-argon": {HexID: hexArgon4, Mode: 8, Desc: "4 Argon (complex tasks); needs a signed-in PAID/Ultra Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
+	"gemini-4-argon-low":    {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkLevelLow,    Desc: "4 Argon reasoning depth low/fast (index15=1)"},
+	"gemini-4-argon-medium": {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkLevelMedium, Desc: "4 Argon reasoning depth medium/balanced (index15=4)"},
+	"gemini-4-argon-high":   {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkLevelHigh,   Desc: "4 Argon reasoning depth high/deep (index15=2)"},
 
 	// 扩展思考版。inner[80]=2 跟模型 hex 正交，都能开；但只在登录态生效，
 	// 所以跟 3.1 Pro 一样在没 cookie 时不暴露。
@@ -97,7 +112,7 @@ var Models = map[string]ModelConfig{
 	// 4 Argon + 扩展思考：Mode=8（选 Argon）+ inner[80]=2（上游现在把这档叫 "High"）。
 	// 实测回报 "4 Argon High" 且带思考链（硬题 985 字符，走既有 [4][0][37][0][0] 路径，
 	// 无需改抽取代码）→ 映射成 reasoning_content。付费/Ultra 专属。
-	"gemini-4-argon-thinking": {HexID: hexArgon4, Mode: 8, Thinking: true, Desc: "4 Argon with extended thinking (High reasoning tier); emits reasoning_content; needs a signed-in PAID/Ultra account"},
+	"gemini-4-argon-thinking": {HexID: hexArgon4, Mode: 8, Thinking: true, ThinkLevel: thinkLevelHigh, Desc: "4 Argon with extended thinking (High reasoning tier); emits reasoning_content; needs a signed-in PAID/Ultra account"},
 
 	// 媒体生成。inner[49] 一填，服务端换后端模型出图/出乐；产物走 hNvQHb + 下载 host
 	// 取回，以 base64 data URL 塞进 content 返回。都要登录态，没 cookie 时不暴露。
@@ -123,7 +138,19 @@ func hasCookie() bool {
 // 逐模型核对等价：那三个正名的 HexID 就是 hexPro31 / hexFlash38，其余登录模型都被
 // Thinking 或 Tool 覆盖。
 func modelNeedsLogin(mc ModelConfig) bool {
-	return mc.HexID == hexPro31 || mc.HexID == hexFlash38 || mc.HexID == hexArgon4 || mc.Thinking || mc.Tool > 0
+	return mc.HexID == hexFlash38 || mc.HexID == hexPro31 ||
+		mc.Thinking || mc.Tool > 0
+}
+
+// preferAnonModel menandai model yang di server ini HANYA jalan lewat jalur
+// anonim. Terbukti dari uji langsung ke akun berbayar (nova-ff2):
+//   4 Argon + cookie   -> 200, served "4 Argon", isi: "Sorry, something went wrong"
+//   4 Argon tanpa cookie -> 200, served "4 Argon", isi: jawaban lengkap
+// Jadi menambahkan Argon ke modelNeedsLogin (memaksa jalur cookie) justru
+// merusaknya. Argon tetap boleh tampil tanpa cookie dan tetap diarahkan ke
+// jalur anonim walau pool punya akun.
+func preferAnonModel(mc ModelConfig) bool {
+	return mc.HexID == hexArgon4 && mc.Tool == 0
 }
 
 // anonFirstEligible 判断「匿名优先」开关下这次请求能不能走匿名（不占 cookie 账号）：
@@ -131,7 +158,13 @@ func modelNeedsLogin(mc ModelConfig) bool {
 // （匿名会被上游回 1100），所以带附件时一律挑号。开关关着永远返回 false（保持旧行为：
 // 池里有号就用号）。
 func anonFirstEligible(mc ModelConfig, hasAttachment bool) bool {
-	return rtCfg().AnonFirst && !hasAttachment && !modelNeedsLogin(mc)
+	if hasAttachment {
+		return false
+	}
+	if preferAnonModel(mc) {
+		return true
+	}
+	return rtCfg().AnonFirst && !modelNeedsLogin(mc)
 }
 
 // temporaryChatEligible 判断这次请求该不该走网页端原生「临时对话」（inner[45]=1，#34）。
@@ -142,6 +175,19 @@ func anonFirstEligible(mc ModelConfig, hasAttachment bool) bool {
 // 发 inner[45] 是没验过的无谓偏离。
 func temporaryChatEligible() bool {
 	return rtCfg().TemporaryChat && !rtCfg().MultiTurn
+}
+
+// temporaryChatEligibleFor 判断这次请求是否该走临时对话。
+//
+// 媒体工具（图/音乐/视频）必须排除：产物下载链在 hNvQHb 历史里（音乐/视频），
+// 图片虽然链在响应里，但链接 403 时唯一的补救就是从历史取新链。临时对话不落历史，
+// hNvQHb 一律回 HTTP 400，等于把补救路径彻底掐断。代价是媒体请求会在会话列表
+// 留一条记录，由 AutoDeleteConversation 收尾。
+func temporaryChatEligibleFor(tool int) bool {
+	if tool == toolImage || tool == toolMusic || tool == toolVideo || tool == toolCanvas {
+		return false
+	}
+	return temporaryChatEligible()
 }
 
 // availableModels 返回当前配置下值得暴露的模型。
@@ -339,7 +385,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	// 带附件（图/视频）时不能走匿名——下面 uploadBytes 那段会因 cookieStr=="" 直接报错。
 	var acct *CookieAccount
 	if !anonFirstEligible(mc, len(pending) > 0) {
-		if a, ok := pickCookieAccount(); ok {
+		if a, ok := pickCookieAccountFor(mc, nil); ok {
 			acct = a
 		}
 	}
@@ -435,7 +481,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		markCookieByStatus(acct.ID, 401, err.Error())
 		lastCookieErr = err
 		logf("[cookie] 账号 #%d 不可用，换下一个：%v", acct.ID, err)
-		acct, _ = pickCookieAccountExcept(tried) // 取不到时返回 nil，循环自然结束
+		acct, _ = pickCookieAccountFor(mc, tried) // 取不到时返回 nil，循环自然结束
 	}
 	if lastCookieErr != nil && cookieStr == "" {
 		if !rtCfg().FallbackAnon {
@@ -529,8 +575,9 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	inner[41] = []interface{}{1}
 	// 临时对话（#34）：inner[45]=1 让这条不进账号的会话列表、不入训练。只在有登录
 	// cookie 时发——匿名本就不落账号，发了也没意义且没验过。multi_turn 开着时
-	// temporaryChatEligible 直接为假（两者冲突，见那里）。
-	if temporaryChatEligible() && cookieStr != "" {
+	// temporaryChatEligible 直接为假（两者冲突，见那里）。媒体工具一律不发：
+	// 产物补救要读 hNvQHb 历史，临时对话没有历史（见 temporaryChatEligibleFor）。
+	if temporaryChatEligibleFor(mc.Tool) && cookieStr != "" {
 		inner[45] = 1
 	}
 	inner[53] = 0
@@ -583,7 +630,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		thinkVal = thinkingExtended
 	}
 	// 抓包里 header 下标 16 和 inner[59] 是两个不同的 uuid，各生成各的。
-	modelHeader := buildModelHeader(mc.HexID, mc.Mode, thinkVal, uuid.NewString())
+	modelHeader := buildModelHeader(mc.HexID, mc.Mode, thinkVal, mc.ThinkLevel, uuid.NewString())
 	sessionHeader := fmt.Sprintf(`["%s",1]`, reqUUID)
 
 	geminiHeaders := buildGeminiHeaders(cookieStr, sapisid, mc.HexID)
@@ -620,7 +667,16 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		}
 	}
 
-	for attempt := 0; attempt < rtCfg().RetryAttempts; attempt++ {
+	// Model media (video/music/image/canvas) tidak di-retry berulang.
+	// Satu job yang gagal lalu diulang 3x membuat Google melihat pola
+	// request gagal berturut-turut ke endpoint media - itu pemicu utama
+	// sesi di-revoke. Model teks tetap dapat retry penuh karena murah
+	// dan cepat.
+	maxAttempts := rtCfg().RetryAttempts
+	if mc.Tool > 0 && maxAttempts > 1 {
+		maxAttempts = 1
+	}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB)
 		if len(setCookie) > 0 && cookieID > 0 {
 			if merged := mergeSetCookie(cookieStr, setCookie); merged != cookieStr {
@@ -637,7 +693,22 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			if tracker.emitted != "" || rtracker.emitted != "" {
 				break
 			}
-			if attempt < rtCfg().RetryAttempts-1 {
+			// Stall = akun/exit ini yang berhenti dilayani, bukan request-nya
+			// yang salah. Mengulang di akun yang sama hampir pasti macet lagi
+			// dan membuang seluruh jatah retry. Pindah akun dulu; baru kalau
+			// tidak ada akun lain, ulangi di tempat yang sama.
+			var stall *errUpstreamStall
+			if errors.As(err, &stall) {
+				if switched := switchToAccountSupporting(mc, tried, &acct, &cookieStr,
+					&cookieID, &cookieLabel, &sapisid, &xsrfToken); switched {
+					logf("[model] %s macet di akun sebelumnya (%v), pindah ke akun #%d",
+						modelLabel(mc), stall, cookieID)
+					lastErr = nil
+					attempt--
+					continue
+				}
+			}
+			if attempt < maxAttempts-1 {
 				logf("retry %d/%d: %v", attempt+1, rtCfg().RetryAttempts, err)
 				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
 			}
@@ -666,7 +737,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			if tracker.emitted != "" || rtracker.emitted != "" {
 				break
 			}
-			if attempt < rtCfg().RetryAttempts-1 {
+			if attempt < maxAttempts-1 {
 				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
 			}
 			continue
@@ -678,7 +749,15 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		//
 		// 判据是**有没有内容帧**，不是 BardErrorInfo：正常响应的结束帧里也带错误码
 		// （1096 = 会话未持久化），拿它判错会把每个正常响应都判成失败。
-		if !hasContentFrame(string(raw)) {
+		// Video (Veo) bersifat ASINKRON: StreamGenerate hanya mengembalikan
+		// "I'm generating your video" + job id, lalu artefak diambil lewat
+		// polling hNvQHb. Jadi untuk toolVideo, tidak adanya content frame
+		// BUKAN kegagalan - itu respons normal. Cukup pastikan raw tidak kosong.
+		noContent := !hasContentFrame(string(raw))
+		if mc.Tool == toolVideo && len(raw) > 0 {
+			noContent = false
+		}
+		if noContent {
 			lastErr = fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(raw))
 			if pickedOK {
 				// 记进代理健康度：1155 跟出口质量强相关（干净出口 60+ 次 0 发生，
@@ -688,11 +767,123 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			if tracker.emitted != "" || rtracker.emitted != "" {
 				break
 			}
-			if attempt < rtCfg().RetryAttempts-1 {
+			if attempt < maxAttempts-1 {
 				logf("retry %d/%d: 空响应（无内容帧，%d 字节）", attempt+1, rtCfg().RetryAttempts, len(raw))
 				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
 			}
 			continue
+		}
+		// Deteksi downgrade: Google kadang menerima request tapi menyajikan model
+		// lain (video/canvas/argon turun ke chat biasa). Kalau itu terjadi, jangan
+		// lanjut ke pipeline media - gagal cepat dengan pesan yang jelas, bukan
+		// menggantung 90 detik lalu 502.
+		// Canvas sengaja memakai model chat (hexFlash36) dan mengembalikan HTML
+		// inline, bukan artefak media. Jadi deteksi downgrade tidak berlaku:
+		// kalau ikut diperiksa, canvas selalu ditolak karena "served 3.8 Flash".
+		if mc.Tool > 0 && mc.Tool != toolCanvas {
+			// Tiga kondisi yang dulu disamakan jadi satu pesan:
+			//   1. kuota habis      -> Google balas "limit resets", tanpa artefak
+			//   2. tak punya akses  -> model turun ke chat biasa (3.x Flash)
+			//   3. jalan            -> lanjut ke pipeline media
+			if reason := mediaQuotaExhausted(string(raw)); reason != "" {
+				// Untuk video, "limit resets" hampir selalu berarti job sebelumnya
+				// masih dirender Google - bukan kuota nol. Retry justru memperkuat
+				// penolakan, jadi serahkan ke pipeline polling di bawah.
+				if mc.Tool == toolVideo {
+					logf("[media] video: Google bilang limit, lanjut polling job yang ada")
+				} else {
+					lastErr = fmt.Errorf("%s quota exhausted: %s", modelLabel(mc), reason)
+					if pickedOK {
+						recordProxyResult(picked.ID, false, lastErr.Error())
+					}
+					// Kuota habis bukan kegagalan sementara: akun ini tidak akan
+					// berhasil untuk model ini hari ini. Jangan retry akun yang sama
+					// (buang-buang waktu) - pindah ke akun berikutnya di pool.
+					if switched := switchToAccountSupporting(mc, tried, &acct, &cookieStr,
+						&cookieID, &cookieLabel, &sapisid, &xsrfToken); switched {
+						lastErr = nil
+						attempt--
+						continue
+					}
+					lastErr = fmt.Errorf("%s quota exhausted on all %d account(s): %s",
+						modelLabel(mc), len(tried), reason)
+					break
+				}
+			}
+		}
+		// Deteksi downgrade berlaku untuk model media MAUPUN teks: Google tidak
+		// menolak request yang akunnya tidak berhak, dia menyajikan model lain
+		// dengan status 200. Untuk model teks ini dulu lolos tanpa terdeteksi,
+		// jadi klien menerima "sukses" dengan model yang salah.
+		if served := extractUpstreamModel(string(raw)); served != "" && !modelServedMatches(mc, served) {
+			lastErr = fmt.Errorf(
+				"upstream downgraded: requested %s but Google served %q "+
+					"(this account has no access to that model)", modelLabel(mc), served)
+			if pickedOK {
+				recordProxyResult(picked.ID, false, lastErr.Error())
+			}
+			// Akun ini sehat, hanya tidak berhak atas model tersebut. Jangan
+			// tandai sebagai gagal (bukan salah cookie), cukup pindah akun.
+			markCookieByStatus(cookieID, 200, "")
+			if switched := switchToAccountSupporting(mc, tried, &acct, &cookieStr,
+				&cookieID, &cookieLabel, &sapisid, &xsrfToken); switched {
+				logf("[model] %s ditolak akun #%d (disajikan %q), pindah akun",
+					modelLabel(mc), cookieID, served)
+				lastErr = nil
+				attempt--
+				continue
+			}
+			if mc.Tool > 0 {
+				// Model media tidak di-retry: mengulang job media berturut-turut
+				// ke akun yang sama adalah pemicu utama sesi di-revoke.
+				break
+			}
+			if attempt < maxAttempts-1 {
+				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
+			}
+			continue
+		}
+		// Jawaban yang isinya penolakan generik: HTTP 200, nama model benar,
+		// tapi bukan jawaban. Ini kelas kegagalan tersendiri — bukan kuota
+		// (tidak menyebut "limit resets"), bukan downgrade (nama model cocok).
+		// Sebelum ini klien menerimanya sebagai sukses dan mengira modelnya
+		// rusak.
+		//
+		// Percobaan ulang DIBATASI 2, bukan memakai seluruh jatah retry: satu
+		// penolakan butuh 30-140 detik, jadi 3 percobaan bisa menembus 420
+		// detik dan klien yang timeout lebih dulu tidak pernah menerima apa
+		// pun — termasuk kalau percobaan ketiga sebenarnya berhasil.
+		if mc.Tool == 0 && cannedRefusal(extractResponseText(string(raw))) {
+			lastErr = fmt.Errorf("upstream returned a canned refusal instead of an answer "+
+				"(model %s, akun %s); this is transient on Google's side, not a quota or access problem",
+				modelLabel(mc), cookieLabel)
+			if pickedOK {
+				recordProxyResult(picked.ID, false, lastErr.Error())
+			}
+			// Penolakan generik biasanya menempel pada satu akun pada satu
+			// waktu, bukan pada request-nya. Mengulang di akun yang sama sering
+			// ditolak lagi; pindah akun dulu.
+			if attempt < maxRefusalRetries-1 {
+				if switched := switchToAccountSupporting(mc, tried, &acct, &cookieStr,
+					&cookieID, &cookieLabel, &sapisid, &xsrfToken); switched {
+					logf("[model] %s ditolak generik di akun sebelumnya, pindah ke akun #%d",
+						modelLabel(mc), cookieID)
+					lastErr = nil
+					attempt--
+					continue
+				}
+			}
+			if attempt < maxAttempts-1 && attempt < maxRefusalRetries-1 {
+				logf("retry %d/%d: jawaban penolakan generik, ulangi", attempt+1, maxAttempts)
+				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
+				continue
+			}
+			// Sudah cukup dicoba. Kembalikan teks apa adanya daripada 502:
+			// klien tetap dapat sesuatu yang bisa ditampilkan, dan dashboard
+			// mencatatnya sebagai sukses dengan upstream model yang benar.
+			// Menjadikannya 502 hanya memindahkan rasa "rusak" ke 9router.
+			logf("[model] %s: penolakan generik setelah %d percobaan, diteruskan apa adanya",
+				modelLabel(mc), attempt+1)
 		}
 		if pickedOK {
 			recordProxyResult(picked.ID, true, "")
@@ -721,9 +912,35 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			case toolVideo:
 				mime = "video/mp4"
 			}
-			arts, aerr := fetchMediaArtifacts(
-				mc.Tool, string(raw), extractConversationID(string(raw)),
-				cookieStr, sapisid, xsrfToken, proxyURL, mime)
+			// Batas keras: media tidak boleh menggantung tanpa akhir. Kalau
+			// upstream lambat atau akun tidak berhak, klien harus dapat error
+			// cepat, bukan koneksi yang menggantung berjam-jam.
+			mediaTimeout := 120 * time.Second
+			if mc.Tool == toolVideo {
+				// Harus lebih besar dari total polling video (48 x 10s = 480s),
+				// kalau tidak batas ini yang memotong lebih dulu.
+				mediaTimeout = 540 * time.Second
+			}
+			type mediaResult struct {
+				arts []MediaArtifact
+				err  error
+			}
+			done := make(chan mediaResult, 1)
+			go func() {
+				a, e := fetchMediaArtifacts(
+					mc.Tool, string(raw), extractConversationID(string(raw)),
+					cookieStr, sapisid, xsrfToken, proxyURL, mime)
+				done <- mediaResult{a, e}
+			}()
+			var arts []MediaArtifact
+			var aerr error
+			select {
+			case r := <-done:
+				arts, aerr = r.arts, r.err
+			case <-time.After(mediaTimeout):
+				aerr = fmt.Errorf("media retrieval timed out after %s (upstream did not deliver the artifact; a free account usually cannot render %s)",
+					mediaTimeout, mime)
+			}
 			if aerr != nil {
 				logf("[media] 取回产物失败: %v", aerr)
 				result.MediaErr = aerr.Error()
@@ -737,7 +954,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		//
 		// 临时对话（#34）生效时跳过：那条压根没进会话列表，删它是多发一次 RPC 删空气。
 		// 这正是临时对话比 create-then-delete 省的那一次出站请求。
-		if rtCfg().AutoDeleteConversation && !temporaryChatEligible() && cookieStr != "" && xsrfToken != "" {
+		if rtCfg().AutoDeleteConversation && !temporaryChatEligibleFor(mc.Tool) && cookieStr != "" && xsrfToken != "" {
 			if cid := extractConversationID(string(raw)); cid != "" {
 				go deleteConversation(cid, cookieStr, sapisid, xsrfToken, proxyURL)
 			}
@@ -752,6 +969,8 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 
 // upstreamModelRe 匹配响应帧里服务端自报的模型显示名（帧的 [42] 位）。
 // 形如 ...,"fbb127bbb056c959",null,null,"3.6 Flash",true,...
+var quotaResetRe = regexp.MustCompile(`(?i)(available again[^".\\]{0,70}|resets? (?:in|on|at)[^".\\]{0,50})`)
+
 var upstreamModelRe = regexp.MustCompile(`\\"[0-9a-f]{16}\\",null,null,\\"([^"\\]{1,40})\\"`)
 
 // extractUpstreamModel 取服务端实际使用的模型名，取不到返回空串。
@@ -761,6 +980,163 @@ func extractUpstreamModel(raw string) string {
 		return ""
 	}
 	return m[len(m)-1][1]
+}
+
+
+// mediaQuotaExhausted mendeteksi respons Google yang menyatakan jatah media
+// sudah habis (bukan karena akun tidak punya akses). Google mengirim teks
+// seperti "I can create more videos as soon as your limit resets" tanpa
+// artefak apa pun; tanpa deteksi ini kasusnya salah dikira downgrade.
+func mediaQuotaExhausted(raw string) string {
+	low := strings.ToLower(raw)
+	markers := []string{
+		"limit resets", "limit reset", "as soon as your limit",
+		"check your usage in settings", "reached your limit",
+		"out of videos", "out of images", "out of video",
+	}
+	hit := false
+	for _, m := range markers {
+		if strings.Contains(low, m) {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return ""
+	}
+	if m := quotaResetRe.FindString(raw); m != "" {
+		return m
+	}
+	return "Google reported the media quota is used up"
+}
+
+// modelLabel mengembalikan nama model yang diminta, untuk pesan error.
+// Pencocokan harus menyertakan Thinking: gemini-4-argon dan
+// gemini-4-argon-thinking punya HexID/Tool/ThinkLevel yang sama, jadi tanpa
+// pembeda itu pesan error bisa menyebut model yang tidak pernah diminta.
+func modelLabel(mc ModelConfig) string {
+	for name, m := range Models {
+		if m.HexID == mc.HexID && m.Tool == mc.Tool &&
+			m.ThinkLevel == mc.ThinkLevel && m.Thinking == mc.Thinking {
+			return name
+		}
+	}
+	for name, m := range Models {
+		if m.HexID == mc.HexID && m.Tool == mc.Tool && m.ThinkLevel == mc.ThinkLevel {
+			return name
+		}
+	}
+	return mc.HexID
+}
+
+// modelServedMatches memeriksa apakah model yang benar-benar disajikan Google
+// sesuai dengan yang diminta. Untuk model tool (video/canvas/image/music),
+// nama yang disajikan biasanya nama model chat -> itu tanda downgrade.
+//
+// Untuk model teks, Google tidak menolak permintaan yang akunnya tidak berhak;
+// dia menjawab 200 dengan model yang lebih rendah (Argon -> 3.5 Flash-Lite).
+// Tanpa pemeriksaan ini klien menerima "sukses" dengan model yang salah dan
+// tidak ada satu pun sinyal yang memberitahunya.
+func modelServedMatches(mc ModelConfig, served string) bool {
+	low := strings.ToLower(served)
+	switch mc.Tool {
+	case toolVideo:
+		return strings.Contains(low, "veo") || strings.Contains(low, "video")
+	case toolImage:
+		return strings.Contains(low, "nano") || strings.Contains(low, "image") ||
+			strings.Contains(low, "banana")
+	case toolMusic:
+		return strings.Contains(low, "lyria") || strings.Contains(low, "music")
+	case toolCanvas:
+		return strings.Contains(low, "canvas")
+	}
+	// Model teks: cocokkan kelasnya, bukan string persisnya — Google menambahkan
+	// sufiks tingkat penalaran ("4 Argon High", "3.8 Flash High") dan
+	// menghilangkan spasi pada sebagian label.
+	norm := strings.ReplaceAll(low, " ", "")
+	switch mc.HexID {
+	case hexArgon4:
+		return strings.Contains(norm, "argon")
+	case hexFlash38:
+		// 3.8 dan 3.7 berbagi hex yang sama; keduanya diterima.
+		return strings.Contains(norm, "3.8flash") || strings.Contains(norm, "3.7flash")
+	case hexPro31:
+		return strings.Contains(norm, "3.1pro")
+	case hexFlash36:
+		return strings.Contains(norm, "3.6flash")
+	case hexFlashLite:
+		return strings.Contains(norm, "flash-lite") || strings.Contains(norm, "flashlite")
+	}
+	return true
+}
+
+// switchToAccountSupporting memindahkan request yang sedang berjalan ke akun
+// lain yang menurut probe benar-benar mendukung model ini.
+//
+// Dipakai dua tempat: saat kuota media habis, dan saat Google menyajikan model
+// yang berbeda (downgrade). Keduanya berarti "akun ini bukan akun yang tepat",
+// bukan "request ini salah". Mengembalikan false kalau tidak ada akun lain,
+// sehingga pemanggil bisa berhenti dengan pesan yang jelas.
+func switchToAccountSupporting(mc ModelConfig, tried map[int64]bool,
+	acct **CookieAccount, cookieStr *string, cookieID *int64,
+	cookieLabel *string, sapisid *string, xsrfToken *string) bool {
+	if *cookieID > 0 {
+		tried[*cookieID] = true
+	}
+	next, ok := pickCookieAccountFor(mc, tried)
+	if !ok {
+		return false
+	}
+	*acct = next
+	*cookieStr = next.Cookie
+	*cookieID = next.ID
+	*cookieLabel = next.Label
+	*sapisid = extractSAPISID(next.Cookie)
+	// XSRF harus diambil ulang untuk akun baru. Kalau dikosongkan, hNvQHb
+	// (riwayat percakapan, dipakai untuk mengambil ulang link produk media)
+	// dijawab HTTP 400 "xsrf" — dan itu mematikan satu-satunya jalur
+	// penyelamatan saat link CDN dari StreamGenerate ditolak.
+	*xsrfToken = ""
+	if tok, err := getXSRF(next.Cookie, proxyURLByID(next.ProxyID)); err == nil {
+		*xsrfToken = tok
+	}
+	return true
+}
+
+// maxRefusalRetries membatasi berapa kali jawaban "penolakan generik" diulang.
+// Satu penolakan butuh 30-140 detik, jadi 3 percobaan bisa melewati 420 detik
+// dan klien timeout sebelum menerima apa pun. Dua percobaan cukup: kalau dua
+// kali tetap ditolak, mengulang lagi hampir selalu sia-sia.
+const maxRefusalRetries = 2
+
+// cannedRefusalMarkers adalah kalimat penolakan generik Google. Respons seperti
+// ini datang dengan HTTP 200 dan nama model yang benar, jadi tanpa deteksi
+// khusus klien menerima "sukses" yang isinya bukan jawaban.
+//
+// Ini BUKAN kuota habis (bedanya: kuota menyebut "limit resets") dan bukan
+// downgrade (nama modelnya sesuai). Penyebabnya beban/penolakan sesaat di sisi
+// Google; satu percobaan ulang biasanya berhasil.
+var cannedRefusalMarkers = []string{
+	"having a hard time fulfilling your request",
+	"something went wrong. please try your request again",
+	"encountered an error doing what you asked",
+	"seem to be encountering an error",
+	"i'm having a hard time",
+}
+
+// cannedRefusal mendeteksi jawaban yang sebenarnya penolakan generik.
+func cannedRefusal(text string) bool {
+	low := strings.ToLower(strings.TrimSpace(text))
+	if len(low) > 400 {
+		// Jawaban asli bisa panjang; penolakan selalu pendek.
+		return false
+	}
+	for _, m := range cannedRefusalMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildModelHeader 拼 x-goog-ext-525001261-jspb，形状逐槽取自抓包：
@@ -776,7 +1152,19 @@ func extractUpstreamModel(raw string) string {
 // x-goog-ext-525005358-jspb。两份抓包都是这个规律，别图省事复用同一个。
 //
 // uuid 留空时退回最小形式（匿名路径不需要这些槽位，少发一截更省事）。
-func buildModelHeader(hexID string, mode, think int, uuid string) string {
+func buildModelHeader(hexID string, mode, think, thinkLevel int, uuid string) string {
+	// Argon WAJIB pakai format generik ber-uuid, sama seperti model lain.
+	// Uji langsung ke akun berbayar (nova-ff2), empat format dibandingkan:
+	//   generik + uuid + mode8 + think1 -> "4 Argon", jawaban lengkap
+	//   caps [4,5,6,8,16,19,20] + level -> "4 Argon", isi: "Sorry, something went wrong"
+	//   caps + level2                   -> "4 Argon High", isi: error
+	// Format caps memang membuat Google MELAPORKAN "4 Argon", tapi generasinya
+	// gagal — jebakan yang sempat menipu: served benar, isi rusak.
+	// Jadi ThinkLevel hanya diterjemahkan ke think (1=plain, 2=high), bukan
+	// ke bentuk header yang berbeda.
+	if hexID == hexArgon4 && thinkLevel >= thinkLevelHigh {
+		think = thinkingExtended
+	}
 	if uuid == "" {
 		return fmt.Sprintf(`[1,null,null,null,"%s"]`, hexID)
 	}
@@ -801,7 +1189,7 @@ func buildGeminiHeaders(cookieStr, sapisid, hexID string) map[string]string {
 		"x-goog-ext-73010990-jspb": "[0,0,0]",
 	}
 	if hexID != "" {
-		h["x-goog-ext-525001261-jspb"] = buildModelHeader(hexID, 0, 0, "")
+		h["x-goog-ext-525001261-jspb"] = buildModelHeader(hexID, 0, 0, 0, "")
 	}
 	if cookieStr != "" {
 		h["Cookie"] = cookieStr
@@ -873,24 +1261,121 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 //
 // start 必须是**请求发出前**的时刻，由调用方传入。放在本函数里取 time.Now()
 // 是不对的：那时 client.Do 已经返回、响应头甚至部分 body 都到了，测出来恒为 0。
-func readBody(r io.Reader, onLine func(string), start time.Time) ([]byte, int64, error) {
+// isStreamTerminator menjawab apakah satu baris adalah frame penutup respons
+// batchexecute: [["e",<code>,null,null,<bytes>]].
+//
+// Kenapa penting: Google mengirim frame ini sebagai penanda "selesai", tapi
+// koneksinya TIDAK ditutup sesudahnya. Tanpa deteksi ini pembaca menggantung
+// sampai timeout total (180s+) padahal isi jawaban sudah lengkap sejak detik
+// pertama — persis gejala "TTFB 1s tapi total 200s".
+func isStreamTerminator(line string) bool {
+	s := strings.TrimSpace(line)
+	if !strings.HasPrefix(s, `[["e",`) {
+		return false
+	}
+	// Pastikan bentuknya memang frame penutup, bukan teks biasa yang kebetulan
+	// mirip: harus ada penanda akhir array.
+	return strings.HasSuffix(s, "]]")
+}
+
+// isPreambleLine menjawab apakah baris ini bagian pembungkus protokol, bukan isi.
+//
+// batchexecute mengirim: `)]}'` (penanda anti-XSSI), lalu angka panjang tiap
+// potongan (`177`, `36`, `5520`), baru frame JSON. Kalau TTFB dihitung dari
+// baris pertama, angkanya selalu ~1-2 detik dan menyesatkan: yang terukur
+// kedatangan pembungkus, bukan jawaban. Akibatnya request yang butuh 358 detik
+// tampak "TTFB 1.8s" dan orang menyimpulkan stream-nya menggantung padahal
+// Google memang belum mengirim isi.
+func isPreambleLine(line string) bool {
+	s := strings.TrimSpace(line)
+	if s == "" || s == ")]}'" {
+		return true
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// stallAfter adalah berapa lama tanpa byte baru sebelum upstream dianggap macet.
+//
+// Harus di atas interval heartbeat Google (terukur 60 detik: frame
+// [{"37":[n]}] tiap ~60s selama model berpikir). Kalau di bawah itu, stream
+// yang sehat ikut diputus dan kita kehilangan jawaban yang sebenarnya jalan.
+//
+// Efeknya: request yang benar-benar macet berhenti di ~2 menit, bukan menunggu
+// batas total 720 detik. Klien menerima error yang bisa ditindaklanjuti jauh
+// lebih cepat, dan akun berikutnya bisa langsung dicoba.
+const stallAfter = 150 * time.Second
+
+// errUpstreamStall menandai pembacaan yang dihentikan karena upstream berhenti
+// mengirim data. Dibedakan dari timeout total supaya pemanggil tahu ini bukan
+// soal waktu habis, melainkan upstream berhenti bekerja.
+type errUpstreamStall struct{ Idle time.Duration }
+
+func (e *errUpstreamStall) Error() string {
+	return fmt.Sprintf("upstream stopped sending data (idle %s)", e.Idle.Round(time.Second))
+}
+
+func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, int64, error) {
 	var buf bytes.Buffer
 	sc := bufio.NewScanner(io.TeeReader(r, &buf))
 	// 单帧可能很大（实测见过 40 万字节的响应），默认 64KB 上限不够。
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+
+	// Pengawas: kalau tidak ada baris baru selama stallAfter, tutup body.
+	// Menutup body adalah satu-satunya cara membangunkan sc.Scan() yang sedang
+	// memblokir di read; errornya lalu terbaca sebagai stall.
+	stopWatch := make(chan struct{})
+	var stalled atomic.Bool
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopWatch:
+				return
+			case <-t.C:
+				idle := time.Duration(time.Now().UnixNano() - lastActivity.Load())
+				if idle > stallAfter {
+					stalled.Store(true)
+					_ = r.Close()
+					return
+				}
+			}
+		}
+	}()
+
 	var ttfb int64 = -1
 	for sc.Scan() {
-		if ttfb < 0 {
+		lastActivity.Store(time.Now().UnixNano())
+		line := sc.Text()
+		// TTFB = saat frame isi pertama tiba, bukan saat pembungkus tiba.
+		if ttfb < 0 && !isPreambleLine(line) {
 			ttfb = time.Since(start).Milliseconds()
 		}
 		if onLine != nil {
-			onLine(sc.Text())
+			onLine(line)
+		}
+		// Frame penutup: jawaban sudah utuh, berhenti membaca. Koneksi tidak
+		// akan ditutup upstream, jadi menunggu = menggantung sampai timeout.
+		if isStreamTerminator(line) {
+			break
 		}
 	}
+	close(stopWatch)
+
 	if ttfb < 0 {
 		ttfb = time.Since(start).Milliseconds()
 	}
 	if err := sc.Err(); err != nil {
+		if stalled.Load() {
+			return buf.Bytes(), ttfb, &errUpstreamStall{Idle: stallAfter}
+		}
 		return buf.Bytes(), ttfb, err
 	}
 	return buf.Bytes(), ttfb, nil

@@ -91,12 +91,63 @@ func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 		}
 	}
 
+	// === DETEKSI KONFLIK ROTATE ===
+	// 401 dari RotateCookies belum tentu berarti cookie mati. Kalau browser
+	// masih aktif memakai akun yang sama, browser ikut me-rotate 1PSIDTS dan
+	// token kita jadi basi - Google balas 401. Bedanya:
+	//   cookie MATI      -> /app tidak membawa SNlM0e sama sekali
+	//   cookie DIREBUT    -> /app masih hidup, hanya 1PSIDTS kita yang basi
+	// Untuk kasus kedua jangan disable akun; tandai saja perlu resync.
+	if psidtsErr != nil && len(names) == 0 {
+		invalidateXSRF(cookie)
+		if _, xerr := getXSRF(cookie, proxyURL); xerr == nil {
+			// Sesi masih hidup -> ini konflik rotate, bukan kematian cookie.
+			logf("[rotate] akun #%d: 1PSIDTS ditolak tapi sesi masih hidup "+
+				"(browser ikut rotate) - akun dipertahankan", a.ID)
+			_, _ = getDB().Exec(
+				`UPDATE accounts SET fail_count=0, status='enabled', last_ok_at=?,
+				 last_error='rotate conflict: browser holds 1PSIDTS' WHERE id=?`,
+				time.Now().Unix(), a.ID)
+			// Tetap coba SIDCC: itu jalur berbeda dan sering masih berhasil.
+			if c3, iv, n3, err := rotateSIDCC(cookie, proxyURL); err == nil {
+				cookie = c3
+				names = append(names, n3...)
+				if iv > 0 {
+					interval = iv
+				}
+				sidccErr = nil
+			}
+		} else {
+			// Sesi benar-benar mati: /app tidak membawa SNlM0e. Ini bukan
+			// konflik, cookie memang sudah tidak berlaku. Tandai supaya tidak
+			// dipakai terus dan tidak membuang waktu request.
+			logf("[rotate] akun #%d: sesi mati (tanpa SNlM0e) - disable", a.ID)
+			_, _ = getDB().Exec(
+				`UPDATE accounts SET status='disabled', fail_count=fail_count+1,
+				 last_error=? WHERE id=?`,
+				"no SNlM0e in page (cookie expired or not signed in)", a.ID)
+		}
+	}
+
 	names = uniqueKeepOrder(names)
 	if cookie != a.Cookie {
 		old := a.Cookie
 		updateAccountCookie(a.ID, cookie)
 		invalidateXSRF(old)
 	}
+	// Rotate berhasil = bukti kuat cookie masih hidup. Kalau sebelumnya akun
+	// di-disable karena dianggap mati (mis. satu kegagalan "no SNlM0e"),
+	// pulihkan sekarang: reset fail_count, enable lagi, catat last_ok_at.
+	// Tanpa ini statusnya stale - akun sehat tetap tampil "dead" selamanya
+	// karena akun yang disabled tidak pernah dipilih untuk request.
+	if len(names) > 0 {
+		_, _ = getDB().Exec(
+			`UPDATE accounts SET fail_count=0, status='enabled', last_ok_at=?, last_error=''
+			 WHERE id=? AND (fail_count>0 OR status!='enabled')`,
+			time.Now().Unix(), a.ID)
+		logf("[rotate] akun #%d pulih: fail_count=0, status=enabled", a.ID)
+	}
+
 	if len(names) > 0 {
 		logf("[rotate] 账号 #%d 刷新了 %s", a.ID, strings.Join(names, ", "))
 	}
@@ -368,9 +419,9 @@ func rotateDo(method, url string, headers map[string]string, body []byte, proxyU
 func rotateAllAccounts() time.Duration {
 	next := defaultRotateInterval
 	for _, a := range accountList() {
-		if a.Status != "enabled" {
-			continue
-		}
+		// Akun disabled tetap dicoba rotate: kalau cookie-nya ternyata masih
+		// hidup, rotateAccount akan memulihkannya (reset fail_count + enable).
+		// Tanpa ini akun yang sempat gagal sekali tidak akan pernah kembali.
 		iv, _, err := rotateAccount(a)
 		if err != nil {
 			logf("[rotate] 账号 #%d 保活失败: %v", a.ID, err)

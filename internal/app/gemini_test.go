@@ -261,8 +261,19 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 			t.Errorf("无 cookie 时不该暴露 thinking 版: %s", name)
 		}
 	}
-	if len(availableModels()) != 2 {
-		t.Errorf("无 cookie 时应只剩 2 个模型, got %d", len(availableModels()))
+	// 数量不写死：匿名可用的模型会随上游放开/收回而变（4 Argon 现在可匿名用）。
+	// 判据是"暴露的每一个都不需要登录"，而不是"正好 2 个"。
+	for name := range availableModels() {
+		if modelNeedsLogin(Models[name]) {
+			t.Errorf("无 cookie 时暴露了需要登录的模型: %s", name)
+		}
+	}
+	for name, m := range Models {
+		if !modelNeedsLogin(m) {
+			if _, ok := availableModels()[name]; !ok {
+				t.Errorf("无 cookie 时应暴露匿名可用的 %s", name)
+			}
+		}
 	}
 	_, _, err := resolveModel("gemini-3.1-pro")
 	if err == nil {
@@ -298,7 +309,17 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 // modelNeedsLogin 是「没 cookie 时排除哪些模型」和「#20 匿名优先要不要占号」
 // 共用的单一判据，逐个模型钉死：纯文本非思考的 3.6/3.5-lite 匿名可用，其余全需登录。
 func TestModelNeedsLogin(t *testing.T) {
-	anon := map[string]bool{"gemini-3.6-flash": true, "gemini-3.5-flash-lite": true}
+	// 4 Argon terbukti JALAN di jalur anonim (uji langsung: anonim -> "4 Argon"
+	// dengan jawaban lengkap; dengan cookie -> "4 Argon" tapi isinya error).
+	// Jadi Argon bukan model "butuh login" — dia justru model "lebih baik anonim".
+	anon := map[string]bool{
+		"gemini-3.6-flash":      true,
+		"gemini-3.5-flash-lite": true,
+		"gemini-4-argon":        true,
+		"gemini-4-argon-low":    true,
+		"gemini-4-argon-medium": true,
+		"gemini-4-argon-high":   true,
+	}
 	for name, mc := range Models {
 		want := !anon[name]
 		if got := modelNeedsLogin(mc); got != want {
@@ -310,6 +331,36 @@ func TestModelNeedsLogin(t *testing.T) {
 		if modelNeedsLogin(Models[name]) {
 			t.Errorf("%s 被 availableModels 暴露却判为需登录，两处判据不一致", name)
 		}
+	}
+}
+
+// Argon harus tetap diarahkan ke jalur anonim walau cookie pool berisi akun.
+// Kalau ikut jalur cookie, Google membalas 200 dengan "4 Argon" tapi isinya
+// pesan error — kegagalan yang menipu karena nama modelnya benar.
+func TestPreferAnonModel(t *testing.T) {
+	for name, mc := range Models {
+		want := mc.HexID == hexArgon4 && mc.Tool == 0
+		if got := preferAnonModel(mc); got != want {
+			t.Errorf("%s: preferAnonModel=%v want %v", name, got, want)
+		}
+	}
+	// preferAnonModel harus menang atas setelan anon_first yang mati.
+	// Setel langsung ke rtVal: saveRuntimeConfig butuh RuntimeConfig lengkap yang
+	// valid, sedangkan di test ini kita hanya peduli satu field.
+	rtMu.Lock()
+	prev := rtVal.AnonFirst
+	rtVal.AnonFirst = false
+	rtMu.Unlock()
+	defer func() {
+		rtMu.Lock()
+		rtVal.AnonFirst = prev
+		rtMu.Unlock()
+	}()
+	if !anonFirstEligible(Models["gemini-4-argon"], false) {
+		t.Error("Argon 应始终走匿名，即使 anon_first 关闭")
+	}
+	if anonFirstEligible(Models["gemini-3.1-pro"], false) {
+		t.Error("3.1 Pro 不该走匿名")
 	}
 }
 

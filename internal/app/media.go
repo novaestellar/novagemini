@@ -134,7 +134,14 @@ func fetchMediaArtifacts(tool int, raw, cid, cookie, sapisid, xsrf, proxyURL, de
 	// 音乐几乎立刻就绪，视频要生成几十秒到几分钟，所以视频轮询给足预算。
 	maxPolls, interval := 6, 2*time.Second
 	if tool == toolVideo {
-		maxPolls, interval = 45, 8*time.Second // 约 6 分钟
+		// Veo butuh waktu, tapi jangan sampai klien menggantung berjam-jam.
+		// 15 x 6s = 90s: cukup untuk render normal, gagal cepat kalau akun
+		// memang tidak punya akses (kasus free tier).
+		// Veo butuh 2-5 menit render. Polling pendek membuat tool menyerah
+		// lalu retry, dan retry itu yang memicu penolakan "limit resets"
+		// dari Google (dianggap job lain masih berjalan).
+		// 48 x 10s = 480s = 8 menit, cukup untuk render normal.
+		maxPolls, interval = 48, 10*time.Second // 约 6 分钟
 	}
 	arts, err := fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime, maxPolls, interval)
 	if err != nil {
@@ -172,19 +179,69 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("响应里没有图片 CDN 链接")
 	}
+	if arts := tryDownloadImageURLs(urls, cookie, proxyURL, defaultMime); len(arts) > 0 {
+		return arts, nil
+	}
+
+	// Semua link dari StreamGenerate gagal (umumnya 403: token di respons sudah
+	// basi atau tidak berlaku untuk host unduhan). Ambil link BARU dari riwayat
+	// percakapan lalu coba sekali lagi.
+	//
+	// Ini yang dulu hilang: polling riwayat hanya jalan kalau link tidak ada
+	// sama sekali, bukan kalau link ada tapi tidak bisa diunduh.
+	//
+	// Batasnya tegas - satu putaran polling saja - supaya tidak pernah jadi loop
+	// tak berujung. Kalau putaran itu pun gagal, error dikembalikan apa adanya.
+	var lastErr error
+	for i := 0; i < 6; i++ {
+		body, err := pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL)
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		fresh := collectImageURLs(body)
+		if len(fresh) == 0 {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if arts := tryDownloadImageURLs(fresh, cookie, proxyURL, defaultMime); len(arts) > 0 {
+			logf("[media] image: link dari respons gagal, link riwayat berhasil")
+			return arts, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("artifact retrieval failed: %w", lastErr)
+	}
+	return nil, fmt.Errorf("artifact retrieval failed: semua link gambar ditolak (403)")
+}
+
+// tryDownloadImageURLs mengunduh semua link yang diberikan dan mengembalikan
+// yang berhasil, tanpa berhenti pada kegagalan pertama. Satu respons biasanya
+// membawa beberapa varian (beda token/resolusi); sebagian bisa 403 sementara
+// yang lain baik-baik saja, jadi satu link buruk tidak boleh membatalkan
+// gambar yang sebenarnya bisa diunduh.
+func tryDownloadImageURLs(urls []string, cookie, proxyURL, defaultMime string) []MediaArtifact {
 	var arts []MediaArtifact
 	for _, u := range urls {
 		mime, data, err := downloadBytes(imageFullResURL(u), cookie, proxyURL, defaultMime)
 		if err != nil {
-			return arts, err
+			// 403 di sini sering transien (CDN menolak sesaat lalu lolos). Satu
+			// percobaan ulang singkat jauh lebih murah daripada jatuh ke polling
+			// riwayat (yang butuh conversation tersimpan).
+			time.Sleep(1500 * time.Millisecond)
+			mime, data, err = downloadBytes(imageFullResURL(u), cookie, proxyURL, defaultMime)
 		}
-		// 同一张图在响应里可能以不同 token 出现（不同分辨率/缩略图），按字节去重，
-		// 免得客户端拿到几张一模一样的图。
+		if err != nil {
+			logf("[media] image: link gagal diunduh (%v), coba link berikutnya", err)
+			continue
+		}
 		if !artifactSeen(arts, data) {
 			arts = append(arts, MediaArtifact{Mime: mime, Data: data})
 		}
 	}
-	return arts, nil
+	return arts
 }
 
 // imageFullResURL 给图片 CDN 链加尺寸参数取原图。plain gg-dl 默认下来是 ~500px 的缩略图
@@ -259,6 +316,10 @@ func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error)
 	form.Set("f.req", string(freq))
 	if xsrf != "" {
 		form.Set("at", xsrf)
+	} else {
+		// Tanpa "at" batchexecute selalu dijawab 400 ({"48448350":["xsrf",...]}),
+		// jadi jangan buang waktu 6 putaran polling untuk hasil yang sudah pasti.
+		return "", fmt.Errorf("hNvQHb butuh XSRF token (kosong untuk akun ini)")
 	}
 	reqid := time.Now().UnixNano() % 1000000
 	endpoint := fmt.Sprintf(
@@ -456,11 +517,22 @@ func mediaGetFollow(rawURL string, headers map[string]string, proxyURL string) (
 			if loc == "" {
 				return status, respHead, body, nil
 			}
-			next, err := resolveRef(cur, loc)
-			if err != nil {
-				return status, respHead, body, err
+			// Location harus dipakai APA ADANYA. Sebelumnya di sini dipanggil
+			// resolveRef (url.Parse + ResolveReference + String()), dan itu
+			// menormalkan ulang URL bertanda tangan milik CDN: hasilnya tetap
+			// terlihat sama di log tapi signature-nya sudah tidak valid, dan
+			// hop berikutnya dijawab HTTP 400 (1555 byte halaman error).
+			// Hanya URL relatif yang perlu digabung; yang absolut diteruskan
+			// byte-per-byte seperti yang dikirim server.
+			if strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://") {
+				cur = loc
+			} else {
+				next, err := resolveRef(cur, loc)
+				if err != nil {
+					return status, respHead, body, err
+				}
+				cur = next
 			}
-			cur = next
 			continue
 		}
 		return status, respHead, body, nil
@@ -484,37 +556,24 @@ func resolveRef(base, ref string) (string, error) {
 // mediaGetOnce 发一次 GET，不跟随重定向，响应头一起带回（要取 content-type / location）。
 // 有代理走 stdlib，没代理走 tls-client，跟 doGeminiRequest / uploadPost 一个规矩。
 func mediaGetOnce(rawURL string, headers map[string]string, proxyURL string) (int, map[string]string, []byte, error) {
-	if proxyURL != "" {
-		req, err := http.NewRequest("GET", rawURL, nil)
-		if err != nil {
-			return 0, nil, nil, err
-		}
-		applyChromeHeaders(req)
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-		resp, err := getStdlibClient(proxyURL).Do(req)
-		if err != nil {
-			return 0, nil, nil, err
-		}
-		defer resp.Body.Close()
-		b, err := io.ReadAll(resp.Body)
-		return resp.StatusCode, flattenHeaders(resp.Header), b, err
-	}
-	req, err := fhttp.NewRequest("GET", rawURL, nil)
+	// 产物下载一律走 stdlib(与手测成功的那次同一套 TLS 栈)。
+	// 之前无代理时走 tls-client,fingerprint 与 CDN 的期望不符,稳定拿 403
+	// (3431 字节的 Google 错误页);lh3 / contribution 不需要反爬指纹。
+	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return 0, nil, nil, err
 	}
+	applyChromeHeaders(req)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := getTLSClient().Do(req)
+	resp, err := getStdlibClient(proxyURL).Do(req)
 	if err != nil {
 		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
-	return resp.StatusCode, flattenFHeaders(resp.Header), b, err
+	return resp.StatusCode, flattenHeaders(resp.Header), b, err
 }
 
 func flattenHeaders(h http.Header) map[string]string {
@@ -582,18 +641,20 @@ func artifactSeen(arts []MediaArtifact, data []byte) bool {
 // appendArtifactMarkdown 把产物字节转成 base64 data URL 追加到正文后面。
 // 图片用 markdown 图片语法（多数聊天 UI 能直接渲染），其余（音频）用链接语法。
 func appendArtifactMarkdown(text string, arts []MediaArtifact) string {
+	return appendArtifactMarkdownWithBase(text, arts, "")
+}
+
+// appendArtifactMarkdownWithBase merender artefak jadi markdown. Artefak kecil
+// tetap base64; artefak besar (music/video) ditulis ke disk dan diganti URL
+// supaya payload respons tidak membengkak sampai memutus koneksi klien.
+func appendArtifactMarkdownWithBase(text string, arts []MediaArtifact, baseURL string) string {
 	var b strings.Builder
 	b.WriteString(text)
 	for _, a := range arts {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
-		dataURL := "data:" + a.Mime + ";base64," + base64.StdEncoding.EncodeToString(a.Data)
-		if strings.HasPrefix(a.Mime, "image/") {
-			b.WriteString("![image](" + dataURL + ")")
-		} else {
-			b.WriteString("[audio](" + dataURL + ")")
-		}
+		b.WriteString(artifactLink(a, baseURL))
 	}
 	return b.String()
 }

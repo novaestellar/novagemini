@@ -52,6 +52,10 @@ type Config struct {
 	// RPC）。只登录态有意义（匿名本就不落账号）。与 multi_turn 冲突：multi_turn 开着时不发，
 	// 见 temporaryChatEligible。默认 false。
 	TemporaryChat bool `json:"temporary_chat"`
+	// SaveMediaToDisk: simpan artefak besar (music/video) ke data/media, kirim URL.
+	SaveMediaToDisk bool `json:"save_media_to_disk"`
+	// MediaInlineKB: ambang base64 vs file (KB). 0 = default 1024.
+	MediaInlineKB int `json:"media_inline_kb"`
 }
 
 var (
@@ -61,6 +65,8 @@ var (
 
 func defaultConfig() Config {
 	return Config{
+		SaveMediaToDisk: false,
+		MediaInlineKB:   1024,
 		Port:           8083,
 		Host:           "0.0.0.0",
 		RetryAttempts:  3,

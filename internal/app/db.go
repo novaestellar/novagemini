@@ -116,6 +116,23 @@ CREATE TABLE IF NOT EXISTS accounts (
     proxy_id      INTEGER NOT NULL DEFAULT 0      -- 绑定的出口，0 = 还没绑
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_pick ON accounts(status, last_used_at);
+
+-- Hasil probe kapabilitas akun (ESY5D). Disimpan supaya routing model sudah
+-- tahu akun mana yang benar-benar punya akses ke sebuah model sejak boot,
+-- tanpa menunggu probe pertama selesai.
+CREATE TABLE IF NOT EXISTS account_caps (
+    account_id   INTEGER PRIMARY KEY,
+    tier         TEXT NOT NULL DEFAULT 'unknown',
+    caps         TEXT NOT NULL DEFAULT '',
+    rollouts     TEXT NOT NULL DEFAULT '',
+    quota_image  INTEGER NOT NULL DEFAULT -1,
+    quota_music  INTEGER NOT NULL DEFAULT -1,
+    quota_think  INTEGER NOT NULL DEFAULT -1,
+    quota_video  INTEGER NOT NULL DEFAULT -1,
+    alive        INTEGER NOT NULL DEFAULT 0,
+    err          TEXT NOT NULL DEFAULT '',
+    checked_at   INTEGER NOT NULL DEFAULT 0
+);
 `
 
 func getDB() *dbx {

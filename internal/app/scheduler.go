@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// probeInterval menentukan seberapa sering kapabilitas akun di-refresh di latar
+// belakang. Probe hanya membaca status (RPC ESY5D) tanpa memakai kuota media,
+// jadi intervalnya bisa rapat tanpa merugikan akun.
+const probeInterval = 15 * time.Minute
+
 // startScheduler kicks off background loops:
 //  1. hourly aggregation: rolls up requests in the previous closed hour bucket
 //  2. daily aggregation: rolls up the previous closed day bucket
@@ -24,11 +29,17 @@ func startScheduler() {
 		// 会话保活：启动后先尽快刷一次 1PSIDTS（导入的票可能已经快到期），
 		// 之后按服务端在轮转页里指定的间隔走（实测 600 秒）。
 		rotate := time.NewTimer(firstRotateDelay)
+		// Probe kapabilitas akun berkala. ESY5D hanya membaca status, tidak
+		// memakai kuota media, jadi aman dijalankan rutin. Tujuannya menjaga
+		// tabel account_caps tetap segar supaya pemilihan akun tidak memakai
+		// data basi (mis. kuota image yang sudah habis dipakai).
+		probe := time.NewTicker(probeInterval)
 		defer hourly.Stop()
 		defer daily.Stop()
 		defer retention.Stop()
 		defer proxyReload.Stop()
 		defer rotate.Stop()
+		defer probe.Stop()
 
 		for {
 			select {
@@ -42,6 +53,12 @@ func startScheduler() {
 				loadProxies()
 			case <-rotate.C:
 				rotate.Reset(rotateAllAccounts())
+			case <-probe.C:
+				if total, enabled := accountCount(); enabled > 0 {
+					logf("[probe] refresh kapabilitas %d akun", enabled)
+					_ = total
+					probeAllAccounts()
+				}
 			}
 		}
 	}()

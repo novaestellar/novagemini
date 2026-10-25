@@ -409,6 +409,26 @@ func pickCookieAccount() (*CookieAccount, bool) {
 // 轮转会让大约一半请求撞上坏号 —— 表现就是"成功率莫名其妙很低"，而每次失败
 // 看起来都像是上游的问题。
 func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
+	return pickCookieAccountFor(ModelConfig{}, skip)
+}
+
+// pickCookieAccountFor 挑一个**真的能用这个模型**的账号。
+//
+// Ini perbaikan inti untuk masalah "model yang dipanggil beda dengan upstream":
+// pemilihan akun dulu murni round-robin, jadi request `gemini-4-argon` bisa
+// mendarat di akun free. Google tidak menolaknya — dia menjawab 200 dengan
+// 3.5 Flash-Lite. Klien melihat sukses, modelnya salah, dan tidak ada cara
+// mendeteksinya selain membaca nama model di frame respons.
+//
+// Sekarang akun disaring dulu menurut hasil probe ESY5D (tier + rollout +
+// sisa kuota). Akun yang belum pernah diprobe tidak disaring (supportsModel
+// mengembalikan true untuk data kosong), supaya sistem tetap jalan sebelum
+// probe pertama.
+//
+// Kalau tidak ada satu pun akun yang cocok, fungsi ini mengembalikan false
+// sehingga pemanggil bisa memberi error yang jelas, bukan diam-diam
+// menurunkan model.
+func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, bool) {
 	pickMu.Lock()
 	defer pickMu.Unlock()
 	// 健康的排前面，同样健康的按最久未用轮转。
@@ -423,6 +443,7 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 		return nil, false
 	}
 	defer rows.Close()
+	var fallback *CookieAccount
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
@@ -432,8 +453,22 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 		if skip[a.ID] {
 			continue
 		}
+		if mc.HexID != "" && !probeForAccount(a.ID).supportsModel(mc) {
+			// Simpan sebagai kandidat terakhir: kalau semua akun kena saring,
+			// lebih baik mencoba satu daripada langsung menolak request.
+			if fallback == nil {
+				c := a
+				fallback = &c
+			}
+			continue
+		}
 		_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), a.ID)
 		return &a, true
+	}
+	if fallback != nil {
+		logf("[cookie] tidak ada akun yang jelas mendukung model ini, coba #%d sebagai upaya terakhir", fallback.ID)
+		_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), fallback.ID)
+		return fallback, true
 	}
 	return nil, false
 }
@@ -446,6 +481,22 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 //
 // statusCode 为 0 表示压根没拿到响应（网络层失败）。
 func markCookieByStatus(id int64, statusCode int, errStr string) {
+	// 401/403 belum tentu cookie mati: browser yang masih aktif memakai akun
+	// yang sama ikut me-rotate 1PSIDTS, sehingga token kita basi sementara
+	// sesinya sehat. Bedakan dulu sebelum menaikkan fail_count.
+	if statusCode == 401 || statusCode == 403 {
+		if a := accountByID(id); a != nil {
+			invalidateXSRF(a.Cookie)
+			if _, xerr := getXSRF(a.Cookie, proxyURLByID(a.ProxyID)); xerr == nil {
+				logf("[cookie] akun #%d: %d tapi sesi masih hidup "+
+					"(rotate conflict) - fail_count tidak dinaikkan", id, statusCode)
+				_, _ = getDB().Exec(
+					`UPDATE accounts SET last_ok_at=?, last_error='rotate conflict' WHERE id=?`,
+					time.Now().Unix(), id)
+				return
+			}
+		}
+	}
 	switch {
 	case statusCode == 200:
 		markAccountResult(id, true, "")
@@ -500,7 +551,10 @@ func autoDisableIfDead(id int64) {
 	var status string
 	err := getDB().QueryRow(`SELECT fail_count, status FROM accounts WHERE id=?`, id).
 		Scan(&fails, &status)
-	if err != nil || status != "enabled" || fails < maxCookieAuthFailures {
+	if err != nil || status != "enabled" {
+		return
+	}
+	if fails < maxCookieAuthFailures {
 		return
 	}
 	if _, err := getDB().Exec(

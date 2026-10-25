@@ -59,6 +59,12 @@ type RuntimeConfig struct {
 	// 取代 auto_delete_conversation（省掉删除 RPC）。只登录态有意义，与 multi_turn 冲突
 	// （multi_turn 开着时不发）。默认 false，见 temporaryChatEligible。
 	TemporaryChat bool `json:"temporary_chat"`
+	// SaveMediaToDisk: kalau true, artefak media yang ukurannya >= media_inline_kb
+	// ditulis ke data/media dan respons memuat URL, bukan base64 raksasa.
+	SaveMediaToDisk bool `json:"save_media_to_disk"`
+	// MediaInlineKB: ambang ukuran (KB) di bawah mana artefak tetap dikirim
+	// sebagai base64 supaya respons tetap self-contained. 0 = pakai default 1024.
+	MediaInlineKB int `json:"media_inline_kb"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -94,6 +100,8 @@ func initRuntimeConfig() {
 		AutoDeleteConversation: cfg.AutoDeleteConversation,
 		AnonFirst:              cfg.AnonFirst,
 		TemporaryChat:          cfg.TemporaryChat,
+		SaveMediaToDisk:        cfg.SaveMediaToDisk,
+		MediaInlineKB:          cfg.MediaInlineKB,
 	}
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base
@@ -138,6 +146,7 @@ func validateRuntimeConfig(c RuntimeConfig) error {
 		{"retention_days", c.RetentionDays, 1, 3650},
 		{"proxy_cooldown_min", c.ProxyCooldownMin, 0, 10080},
 		{"max_prompt_bytes", c.MaxPromptBytes, 0, 10000000},
+		{"media_inline_kb", c.MediaInlineKB, 0, 1048576},
 	} {
 		if r.v < r.min || r.v > r.max {
 			return fmt.Errorf("%s=%d 超出允许范围 [%d, %d]", r.name, r.v, r.min, r.max)

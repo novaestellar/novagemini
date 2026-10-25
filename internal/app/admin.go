@@ -156,6 +156,34 @@ func handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats["by_model"] = byModel
 
+	// per-account breakdown (which cookie account actually served the request)
+	arows, _ := getDB().Query(`SELECT COALESCE(NULLIF(account_label,''),'(anonymous)') as a, COUNT(*),
+        SUM(CASE WHEN status=200 THEN 1 ELSE 0 END),
+        COALESCE(AVG(total_ms),0),
+        COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(output_tokens),0)
+        FROM requests WHERE ts >= ? GROUP BY a ORDER BY 2 DESC`, since)
+	var byAccount []map[string]interface{}
+	if arows != nil {
+		for arows.Next() {
+			var a string
+			var c, ok int
+			var avgMs float64
+			var pt, ot int64
+			if err := arows.Scan(&a, &c, &ok, &avgMs, &pt, &ot); err == nil {
+				byAccount = append(byAccount, map[string]interface{}{
+					"account":       a,
+					"requests":      c,
+					"success":       ok,
+					"avg_ms":        int(avgMs),
+					"prompt_tokens": pt,
+					"output_tokens": ot,
+				})
+			}
+		}
+		arows.Close()
+	}
+	stats["by_account"] = byAccount
+
 	// per-proxy breakdown
 	prows, _ := getDB().Query(`SELECT COALESCE(proxy_name,'(direct)') as p, COUNT(*),
         SUM(CASE WHEN status=200 THEN 1 ELSE 0 END),
