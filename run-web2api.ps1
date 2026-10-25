@@ -1,9 +1,10 @@
-# run-web2api.ps1 - supervisor for gemini-web2api-go
+# run-web2api.ps1 - supervisor for NovaGemini
 # Restarts the server whenever it exits, so 9router never sees a dead upstream.
+# Path diturunkan dari lokasi skrip ini, jadi folder bisa dipindah tanpa edit.
 
 $ErrorActionPreference = "Stop"
 
-$Dir      = "C:\Users\Design\Tools\gemini-web2api-go"
+$Dir      = $PSScriptRoot
 $Exe      = Join-Path $Dir "gemini-web2api.exe"
 $Log      = Join-Path $Dir "web2api.log"
 $ErrLog   = Join-Path $Dir "web2api.err.log"
@@ -21,7 +22,7 @@ if (-not (Test-Path $Exe)) {
 }
 
 Set-Location $Dir
-Write-Sup "supervisor start pid=$PID"
+Write-Sup "supervisor start pid=$PID dir=$Dir"
 
 while ($true) {
     $busy = Get-NetTCPConnection -LocalPort 8083 -State Listen -ErrorAction SilentlyContinue
