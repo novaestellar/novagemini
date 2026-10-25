@@ -106,7 +106,7 @@ func defaultConfig() Config {
 func loadConfig(path string) error {
 	cfg = defaultConfig()
 	if path == "" {
-		for _, p := range []string{"./config.json", os.ExpandEnv("$HOME/.config/gemini-web2api/config.json")} {
+		for _, p := range []string{"./config.json", os.ExpandEnv("$HOME/.config/novagemini/config.json")} {
 			if _, err := os.Stat(p); err == nil {
 				path = p
 				break

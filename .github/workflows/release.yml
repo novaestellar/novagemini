@@ -43,7 +43,7 @@ jobs:
           ver="${GITHUB_REF_NAME}"
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os="${target%/*}"; arch="${target#*/}"
-            out="dist/gemini-web2api-go_${ver}_${os}_${arch}"
+            out="dist/novagemini_${ver}_${os}_${arch}"
             [ "$os" = "windows" ] && bin="$out.exe" || bin="$out"
             echo "building $bin"
             GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$bin" .
@@ -61,8 +61,8 @@ jobs:
             echo "单二进制，下载对应平台的那个直接跑，不需要 Go 也不需要 Docker："
             echo
             echo '```bash'
-            echo 'chmod +x gemini-web2api-go_*'
-            echo './gemini-web2api-go_* --port 8083 --admin-token your-admin-token'
+            echo 'chmod +x novagemini_*'
+            echo './novagemini_* --port 8083 --admin-token your-admin-token'
             echo '```'
             echo
             echo "容器部署见 \`ghcr.io/${{ github.repository }}\`。校验完整性用 \`SHA256SUMS.txt\`。"

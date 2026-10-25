@@ -1,0 +1,39 @@
+# 统一换行符:仓库内一律 LF,Windows 可执行/脚本保持 CRLF
+* text=auto eol=lf
+
+# Go 与文档
+*.go   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.txt  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.svg  text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+
+# Windows 脚本必须 CRLF,否则部分环境解析异常
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制与产物:永不 diff、永不转换
+*.exe  binary
+*.db   binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+
+# 第三方压缩产物与生成物:不计语言统计、不进 diff
+internal/app/admin_ui/chart.umd.min.js linguist-generated=true -diff
+*.min.js  linguist-generated=true -diff
+*.min.css linguist-generated=true -diff
+*.lock    linguist-generated=true

@@ -1,11 +1,11 @@
 services:
-  gemini-web2api:
+  novagemini:
     # 默认拉现成镜像，不需要源码——把这个文件单独下下来就能跑。
     # 想从源码构建（改了代码、或者要自己审一遍）就把下面 build 那两行的注释去掉。
-    image: ghcr.io/zexadev/gemini-web2api-go:latest
+    image: ghcr.io/novaestellar/novagemini:latest
     # build:
     #   context: .
-    container_name: gemini-web2api
+    container_name: novagemini
     restart: unless-stopped
 
     # ── 这里只放"改了必须重启进程"的东西 ──────────────────────────────────
@@ -45,7 +45,7 @@ services:
     # command: ["--db", "/data/gemini.db", "--port", "8083", "--cookie-file", "/app/cookie.txt"]
 
     healthcheck:
-      test: ["CMD", "/app/gemini-web2api", "--version"]
+      test: ["CMD", "/app/novagemini", "--version"]
       interval: 30s
       timeout: 5s
       retries: 3

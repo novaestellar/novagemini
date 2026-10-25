@@ -22,7 +22,7 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} go build \
     -ldflags="-s -w" \
     -trimpath \
-    -o /out/gemini-web2api .
+    -o /out/novagemini .
 
 # ─── Runtime stage ───────────────────────────────────────────────────────────
 # distroless/static: ~2MB base, no shell, no package manager — minimal attack surface.
@@ -40,12 +40,12 @@ COPY --from=prepare --chown=65532:65532 /out/data /data
 COPY --from=prepare --chown=65532:65532 /out/app /app
 
 WORKDIR /app
-COPY --from=builder /out/gemini-web2api /app/gemini-web2api
+COPY --from=builder /out/novagemini /app/novagemini
 
 USER nonroot:nonroot
 
 EXPOSE 8083
 
 ENV DB_PATH=/data/gemini.db
-ENTRYPOINT ["/app/gemini-web2api"]
+ENTRYPOINT ["/app/novagemini"]
 CMD ["--db", "/data/gemini.db", "--port", "8083"]

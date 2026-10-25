@@ -1,27 +1,59 @@
-# ─── Build artifacts ──────
+# ─── Build artifacts ──────────────────────────────────
 *.exe
-gemini-web2api-go
-gemini-web2api
+*.exe~
+novagemini
+/novagemini
+dist/
 
-# ─── Runtime data ─────────
+# ─── Runtime data (KANDUNGAN RAHASIA: cookie akun + API key) ──
+# DB memuat cookie login Google dan API key; tidak boleh pernah masuk repo.
 data/
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite3
+
+# ─── Kredensial & konfigurasi lokal ───────────────────
+config.json
 cookie.txt
+cookies.txt
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# ─── Log & temp ───────────────────────────────────────
 *.log
 tmp_*
+*.tmp
 
-# ─── Docker ───────────────
-.env
+# ─── Backup berstempel ────────────────────────────────
+*.bak
+*.bak-*
+*.bak.*
+*.backup
+*.old
+*.pre-split
+*.pre-split-*
 
-# ─── IDE ──────────────────
+# ─── IDE ──────────────────────────────────────────────
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# ─── Go cache ─────────────
+# ─── OS ───────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Go ───────────────────────────────────────────────
 vendor/
-*.exe~
 
-# ─── 本地工程笔记（给 Claude 跨会话续接，不入库不分发）──
+# ─── Catatan kerja lokal (tidak untuk dibagikan) ──────
 docs/local/

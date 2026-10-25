@@ -43,7 +43,7 @@ func Run() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("gemini-web2api-go %s\n", Version)
+		fmt.Printf("novagemini %s\n", Version)
 		return
 	}
 
@@ -172,7 +172,7 @@ func Run() {
 	}
 	sort.Strings(modelNames)
 
-	fmt.Printf("gemini-web2api-go v%s\n", Version)
+	fmt.Printf("novagemini v%s\n", Version)
 	fmt.Printf("  Listening:   http://%s\n", addr)
 	fmt.Printf("  Base URL:    http://localhost:%d/v1\n", cfg.Port)
 	fmt.Printf("  API key:     %s%s\n", maskKey(resolvedAPIKey),

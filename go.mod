@@ -1,4 +1,4 @@
-module gemini-web2api
+module novagemini
 
 go 1.26.8
 

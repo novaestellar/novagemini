@@ -1,13 +1,13 @@
-# run-web2api.ps1 - supervisor for NovaGemini
+﻿# run-novagemini.ps1 - supervisor for NovaGemini
 # Restarts the server whenever it exits, so 9router never sees a dead upstream.
 # Path diturunkan dari lokasi skrip ini, jadi folder bisa dipindah tanpa edit.
 
 $ErrorActionPreference = "Stop"
 
 $Dir      = $PSScriptRoot
-$Exe      = Join-Path $Dir "gemini-web2api.exe"
-$Log      = Join-Path $Dir "web2api.log"
-$ErrLog   = Join-Path $Dir "web2api.err.log"
+$Exe      = Join-Path $Dir "novagemini.exe"
+$Log      = Join-Path $Dir "novagemini.log"
+$ErrLog   = Join-Path $Dir "novagemini.err.log"
 $SuperLog = Join-Path $Dir "supervisor.log"
 
 function Write-Sup {

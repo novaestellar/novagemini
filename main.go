@@ -1,5 +1,5 @@
 package main
 
-import "gemini-web2api/internal/app"
+import "novagemini/internal/app"
 
 func main() { app.Run() }
