@@ -749,12 +749,14 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		//
 		// 判据是**有没有内容帧**，不是 BardErrorInfo：正常响应的结束帧里也带错误码
 		// （1096 = 会话未持久化），拿它判错会把每个正常响应都判成失败。
-		// Video (Veo) bersifat ASINKRON: StreamGenerate hanya mengembalikan
-		// "I'm generating your video" + job id, lalu artefak diambil lewat
-		// polling hNvQHb. Jadi untuk toolVideo, tidak adanya content frame
+		// Video (Veo) dan musik (Lyria) bersifat ASINKRON: StreamGenerate hanya
+		// mengembalikan "I'm generating your ..." + job id, lalu artefak diambil
+		// lewat polling hNvQHb. Jadi untuk keduanya, tidak adanya content frame
 		// BUKAN kegagalan - itu respons normal. Cukup pastikan raw tidak kosong.
+		// (Dulu hanya video yang dikecualikan, sehingga setiap permintaan musik
+		// gagal dengan "no content frame" padahal lagunya benar-benar dibuat.)
 		noContent := !hasContentFrame(string(raw))
-		if mc.Tool == toolVideo && len(raw) > 0 {
+		if (mc.Tool == toolVideo || mc.Tool == toolMusic) && len(raw) > 0 {
 			noContent = false
 		}
 		if noContent {
@@ -916,6 +918,10 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			// upstream lambat atau akun tidak berhak, klien harus dapat error
 			// cepat, bukan koneksi yang menggantung berjam-jam.
 			mediaTimeout := 120 * time.Second
+			if mc.Tool == toolMusic {
+				// Harus melebihi total polling musik (30 x 5s = 150s).
+				mediaTimeout = 200 * time.Second
+			}
 			if mc.Tool == toolVideo {
 				// Harus lebih besar dari total polling video (48 x 10s = 480s),
 				// kalau tidak batas ini yang memotong lebih dulu.
@@ -1046,9 +1052,18 @@ func modelServedMatches(mc ModelConfig, served string) bool {
 		return strings.Contains(low, "nano") || strings.Contains(low, "image") ||
 			strings.Contains(low, "banana")
 	case toolMusic:
-		return strings.Contains(low, "lyria") || strings.Contains(low, "music")
+		// Sama seperti canvas: Google melaporkan model chat di baliknya
+		// ("3.6 Flash"), bukan "Lyria". Menilai dari label model membuat
+		// setiap permintaan musik ditolak sebagai downgrade palsu. Sinyal
+		// yang sah adalah ada/tidaknya artefak audio, diperiksa di pipeline.
+		return true
 	case toolCanvas:
-		return strings.Contains(low, "canvas")
+		// Canvas sengaja memakai model chat (hexFlash36) dan mengembalikan HTML
+		// inline — Google memang melaporkan "3.6/3.8 Flash", bukan "canvas".
+		// Menilai dari label model membuat canvas SELALU ditolak. Satu-satunya
+		// penanda yang sah untuk canvas adalah isi HTML-nya, yang diperiksa
+		// terpisah di pipeline media.
+		return true
 	}
 	// Model teks: cocokkan kelasnya, bukan string persisnya — Google menambahkan
 	// sufiks tingkat penalaran ("4 Argon High", "3.8 Flash High") dan

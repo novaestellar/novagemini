@@ -133,6 +133,13 @@ func fetchMediaArtifacts(tool int, raw, cid, cookie, sapisid, xsrf, proxyURL, de
 	}
 	// 音乐几乎立刻就绪，视频要生成几十秒到几分钟，所以视频轮询给足预算。
 	maxPolls, interval := 6, 2*time.Second
+	if tool == toolMusic {
+		// Lyria juga job asinkron: hasilnya baru muncul di hNvQHb setelah
+		// Google selesai merender. Budget lama 6 x 2s = 12s jauh terlalu
+		// pendek, sehingga setiap permintaan musik berhenti dengan
+		// "hNvQHb 里没等到可下载的产物链接". 30 x 5s = 150s.
+		maxPolls, interval = 30, 5*time.Second
+	}
 	if tool == toolVideo {
 		// Veo butuh waktu, tapi jangan sampai klien menggantung berjam-jam.
 		// 15 x 6s = 90s: cukup untuk render normal, gagal cepat kalau akun
@@ -146,6 +153,24 @@ func fetchMediaArtifacts(tool int, raw, cid, cookie, sapisid, xsrf, proxyURL, de
 	arts, err := fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime, maxPolls, interval)
 	if err != nil {
 		return arts, err
+	}
+	// hNvQHb 有时会把同一账号里更早的产物也一起挂出来(实测:一次音乐请求
+	// 同时下到了 mp3 和一个上一条视频任务的 mp4)。只保留与所请求工具同族的
+	// 产物,否则音乐请求会附带一个陈旧的视频。
+	want := mimeFamily(defaultMime)
+	if want != "" {
+		var kept []MediaArtifact
+		for _, a := range arts {
+			if mimeFamily(a.Mime) == want {
+				kept = append(kept, a)
+			} else {
+				logf("[media] buang artefak beda jenis (%s, diminta %s)", a.Mime, defaultMime)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, fmt.Errorf("产物 jenisnya tidak sesuai: diminta %s, tidak ada yang cocok", defaultMime)
+		}
+		arts = kept
 	}
 	// 视频一次请求 hNvQHb 里会挂多份下载链（疑似 Veo 的多候选/多档编码，含义未严谨证明），
 	// 只留最大的那份，免得客户端一次拿到两个视频。要区分含义得有干净出口再验（见 CLAUDE.md）。
@@ -288,6 +313,7 @@ func fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime st
 		return nil, fmt.Errorf("hNvQHb 里没等到可下载的产物链接（response_data）")
 	}
 	var arts []MediaArtifact
+	var lastErr error
 	for _, u := range dlURLs {
 		// contribution 那条要补 filename / opi。
 		if !strings.Contains(u, "opi=") {
@@ -299,13 +325,35 @@ func fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime st
 		}
 		mime, data, err := downloadBytes(u, cookie, proxyURL, defaultMime)
 		if err != nil {
-			return arts, err
+			// Satu kandidat gagal BUKAN alasan membatalkan sisanya: hNvQHb
+			// mengembalikan beberapa link dan tidak semuanya berisi media
+			// (mis. protobuf metadata). Coba yang lain dulu.
+			lastErr = err
+			logf("[media] kandidat %s ditolak: %v", shortURL(u), err)
+			continue
 		}
 		if !artifactSeen(arts, data) {
 			arts = append(arts, MediaArtifact{Mime: mime, Data: data})
 		}
 	}
+	if len(arts) == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("tidak ada kandidat yang menghasilkan media")
+		}
+		return nil, fmt.Errorf("semua %d kandidat unduhan ditolak: %w", len(dlURLs), lastErr)
+	}
 	return arts, nil
+}
+
+// shortURL memotong URL panjang untuk log.
+func shortURL(u string) string {
+	if i := strings.IndexByte(u, '?'); i > 0 {
+		u = u[:i]
+	}
+	if len(u) > 80 {
+		u = u[:80] + "..."
+	}
+	return u
 }
 
 // pollHistoryRaw 调一次 hNvQHb 取会话历史，返回原始响应体。
@@ -476,6 +524,106 @@ func downloadIsResponseData(rawURL string) bool {
 
 // downloadBytes GET 一条产物链，跟随重定向并每跳重发 cookie 子集，返回 content-type
 // 和原始字节。图片链（会 302）和 contribution 链（单次 200）都走这个。
+// sniffMediaMime mengenali jenis artefak dari magic bytes-nya.
+//
+// Kenapa perlu: content-type dari host unduhan tidak bisa dipercaya untuk
+// membedakan "ini medianya" dari "ini metadata/status". Kasus nyata: unduhan
+// video mengembalikan 4,4 MB protobuf yang isinya prompt -- bukan MP4 sama
+// sekali -- dengan content-type application/octet-stream, dan itu lolos apa
+// adanya sampai ditulis ke disk sebagai .bin. Magic bytes adalah ground truth.
+func sniffMediaMime(b []byte) string {
+	if len(b) < 12 {
+		return ""
+	}
+	has := func(off int, sig ...byte) bool {
+		if off+len(sig) > len(b) {
+			return false
+		}
+		for i, s := range sig {
+			if b[off+i] != s {
+				return false
+			}
+		}
+		return true
+	}
+	ascii := func(off int, s string) bool {
+		return has(off, []byte(s)...)
+	}
+	switch {
+	case ascii(4, "ftyp"): // ISO-BMFF: mp4 / mov / m4a
+		switch string(b[8:12]) {
+		case "M4A ":
+			return "audio/mp4"
+		case "qt  ":
+			return "video/quicktime"
+		}
+		return "video/mp4"
+	case has(0, 0x1A, 0x45, 0xDF, 0xA3): // EBML
+		if ascii(0, "\x1a\x45\xdf\xa3webm") || containsWithin(b, "webm") {
+			return "video/webm"
+		}
+		return "video/x-matroska"
+	case ascii(0, "ID3"): // MP3 with ID3 tag
+		return "audio/mpeg"
+	case has(0, 0xFF, 0xFB), has(0, 0xFF, 0xF3), has(0, 0xFF, 0xF2): // MP3 frame sync
+		return "audio/mpeg"
+	case ascii(0, "OggS"):
+		return "audio/ogg"
+	case ascii(0, "RIFF") && ascii(8, "WAVE"):
+		return "audio/wav"
+	case ascii(0, "RIFF") && ascii(8, "AVI "):
+		return "video/x-msvideo"
+	case ascii(0, "RIFF") && ascii(8, "WEBP"):
+		return "image/webp"
+	case has(0, 0x89) && ascii(1, "PNG\r\n\x1a\n"):
+		return "image/png"
+	case has(0, 0xFF, 0xD8, 0xFF):
+		return "image/jpeg"
+	case ascii(0, "GIF8"):
+		return "image/gif"
+	case ascii(0, "BM"):
+		return "image/bmp"
+	}
+	return ""
+}
+
+// containsWithin cek apakah s muncul di awal b (maks 64 byte).
+func containsWithin(b []byte, s string) bool {
+	n := len(b)
+	if n > 64 {
+		n = 64
+	}
+	return strings.Contains(string(b[:n]), s)
+}
+
+// mimeFamily memetakan mime ke keluarga besar untuk pencocokan.
+func mimeFamily(m string) string {
+	switch {
+	case strings.HasPrefix(m, "image/"):
+		return "image"
+	case strings.HasPrefix(m, "video/"):
+		return "video"
+	case strings.HasPrefix(m, "audio/"):
+		return "audio"
+	}
+	return ""
+}
+
+// hexHead mencetak beberapa byte awal sebagai hex, untuk pesan error.
+func hexHead(b []byte, n int) string {
+	if len(b) < n {
+		n = len(b)
+	}
+	var sb strings.Builder
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		fmt.Fprintf(&sb, "%02X", b[i])
+	}
+	return sb.String()
+}
+
 func downloadBytes(rawURL, cookie, proxyURL, defaultMime string) (string, []byte, error) {
 	headers := map[string]string{
 		"Cookie":  filterDownloadCookies(cookie),
@@ -490,10 +638,22 @@ func downloadBytes(rawURL, cookie, proxyURL, defaultMime string) (string, []byte
 	if status != 200 {
 		return "", nil, fmt.Errorf("下载产物 HTTP %d（%d 字节）", status, len(body))
 	}
-	mime := respHead["content-type"]
-	if i := strings.IndexByte(mime, ';'); i >= 0 {
-		mime = strings.TrimSpace(mime[:i])
+	headerMime := respHead["content-type"]
+	if i := strings.IndexByte(headerMime, ';'); i >= 0 {
+		headerMime = strings.TrimSpace(headerMime[:i])
 	}
+
+	// Magic bytes lebih dipercaya daripada header.
+	if sniffed := sniffMediaMime(body); sniffed != "" {
+		return sniffed, body, nil
+	}
+	// Tidak dikenali sebagai media: kalau yang diminta memang media (gambar/
+	// musik/video), ini bukan artefaknya -- tolak, jangan tulis ke disk.
+	if want := mimeFamily(defaultMime); want != "" {
+		return "", nil, fmt.Errorf("产物 bukan media (mime=%q, %d 字节, magic %s)",
+			headerMime, len(body), hexHead(body, 8))
+	}
+	mime := headerMime
 	if mime == "" || strings.HasPrefix(mime, "text/html") {
 		mime = defaultMime
 	}
