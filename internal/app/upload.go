@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,8 +20,8 @@ const uploadHost = "https://push.clients6.google.com/upload/"
 //
 // 匿名也能传成功，但传上去的文件在对话里引用会被回 1100，所以调用方要自己确保有 cookie。
 // proxyURL 必须跟正式请求同一出口，否则在 Google 眼里是两个会话共用文件。
-func uploadBytes(cookie, proxyURL string, data []byte, filename string) (string, error) {
-	pushID, pctx, err := getUploadTokens(cookie, proxyURL)
+func uploadBytes(cookie, proxyURL string, data []byte, filename string, ctxs ...context.Context) (string, error) {
+	pushID, pctx, err := getUploadTokens(cookie, proxyURL, ctxs...)
 	if err != nil {
 		return "", fmt.Errorf("取上传页面参数失败: %w", err)
 	}
@@ -64,7 +65,7 @@ func uploadBytes(cookie, proxyURL string, data []byte, filename string) (string,
 		"X-Goog-Upload-Header-Content-Length": strconv.Itoa(len(data)),
 	})
 	status, respHead, body, err := uploadPost(uploadHost, startHeaders,
-		[]byte("File name: "+sanitizeUploadName(filename)), proxyURL)
+		[]byte("File name: "+sanitizeUploadName(filename)), proxyURL, ctxs...)
 	if err != nil {
 		return "", fmt.Errorf("上传 start 失败: %w", err)
 	}
@@ -82,7 +83,7 @@ func uploadBytes(cookie, proxyURL string, data []byte, filename string) (string,
 		"X-Goog-Upload-Command": "upload, finalize",
 		"X-Goog-Upload-Offset":  "0",
 	})
-	status, _, body, err = uploadPost(putURL, upHeaders, data, proxyURL)
+	status, _, body, err = uploadPost(putURL, upHeaders, data, proxyURL, ctxs...)
 	if err != nil {
 		return "", fmt.Errorf("上传 finalize 失败: %w", err)
 	}
@@ -108,12 +109,16 @@ func sanitizeUploadName(name string) string {
 }
 
 // uploadPost 走跟主请求相同的出口发 POST，响应头一起带回（start 要取 x-goog-upload-url）。
-func uploadPost(url string, headers map[string]string, body []byte, proxyURL string) (
+func uploadPost(url string, headers map[string]string, body []byte, proxyURL string, ctxs ...context.Context) (
 	int, map[string]string, []byte, error) {
+	ctx := optCtx(ctxs)
 	if proxyURL != "" {
 		req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 		if err != nil {
 			return 0, nil, nil, err
+		}
+		if ctx != nil {
+			req = req.WithContext(ctx)
 		}
 		applyChromeHeaders(req)
 		for k, v := range headers {
@@ -134,6 +139,9 @@ func uploadPost(url string, headers map[string]string, body []byte, proxyURL str
 	req, err := fhttp.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, nil, err
+	}
+	if ctx != nil {
+		req = req.WithContext(ctx)
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)

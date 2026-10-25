@@ -138,7 +138,13 @@ func fetchMediaArtifacts(tool int, raw, cid, cookie, sapisid, xsrf, proxyURL, de
 		// Google selesai merender. Budget lama 6 x 2s = 12s jauh terlalu
 		// pendek, sehingga setiap permintaan musik berhenti dengan
 		// "hNvQHb 里没等到可下载的产物链接". 30 x 5s = 150s.
-		maxPolls, interval = 30, 5*time.Second
+		// 60 x 5s = 300s. Job asinkron, tidak ada klien yang menunggu; generasi
+		// musik yang lambat sebelumnya kehabisan jatah di 150s padahal lagunya
+		// benar-benar dibuat.
+		// 120 x 5s = 600s polling. Link artefak Lyria terkadang muncul jauh
+		// setelah StreamGenerate selesai (pernah >300s); job async jadi tidak
+		// ada alasan menyerah di 300s. Budget total ada di mediaJobTimeout.
+		maxPolls, interval = 120, 5*time.Second
 	}
 	if tool == toolVideo {
 		// Veo butuh waktu, tapi jangan sampai klien menggantung berjam-jam.
@@ -148,7 +154,10 @@ func fetchMediaArtifacts(tool int, raw, cid, cookie, sapisid, xsrf, proxyURL, de
 		// lalu retry, dan retry itu yang memicu penolakan "limit resets"
 		// dari Google (dianggap job lain masih berjalan).
 		// 48 x 10s = 480s = 8 menit, cukup untuk render normal.
-		maxPolls, interval = 48, 10*time.Second // 约 6 分钟
+		// 90 x 10s = 900s (15 menit). Veo memang bisa 2-5 menit; batas lama
+		// 480s memotong render yang lambat. Batas keras total tetap ada di
+		// mediaJobTimeout + mediaTimeout di bawah.
+		maxPolls, interval = 90, 10*time.Second // 约 6 分钟
 	}
 	arts, err := fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime, maxPolls, interval)
 	if err != nil {

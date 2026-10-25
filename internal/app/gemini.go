@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -357,7 +358,7 @@ func (d *deltaTracker) Push(fullText string) string {
 // 自己做。一旦已经吐过内容就不再重试——重试会让客户端收到重复文本。
 func streamGenerate(prompt, latest string, mc ModelConfig,
 	onDelta, onReasoning func(string)) (*StreamResult, error) {
-	return streamGenerateWithFiles(prompt, latest, mc, nil, onDelta, onReasoning)
+	return streamGenerateWithFiles(nil, prompt, latest, mc, nil, onDelta, onReasoning)
 }
 
 // fileRef 是一个已上传附件的引用。
@@ -372,7 +373,7 @@ type fileRef struct {
 //
 // 附件填 inner[0][3]，形状 [[[ref, 1], "文件名"], …]。附件只在登录态可用：
 // 匿名能把文件传上去，但对话里一引用就被服务端回 1100。
-func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pendingUpload,
+func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc ModelConfig, pending []pendingUpload,
 	onDelta, onReasoning func(string)) (*StreamResult, error) {
 	var files []fileRef
 
@@ -441,7 +442,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		tried[acct.ID] = true
 		// 归属先记上：这一轮失败了也留痕，面板上看得出是哪个号在坏
 		cookieID, cookieLabel = acct.ID, accountDisplayName(acct)
-		tok, err := getXSRF(acct.Cookie, proxyURL)
+		tok, err := getXSRF(acct.Cookie, proxyURL, ctx)
 		if err == nil {
 			cookieStr, sapisid, xsrfToken = acct.Cookie, extractSAPISID(acct.Cookie), tok
 			// 只在「还没绑过」或「绑的出口已经没了」时写绑定。
@@ -465,7 +466,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			rotatedOnce[acct.ID] = true
 			if _, _, rerr := rotateAccount(*acct); rerr == nil {
 				if fresh := accountByID(acct.ID); fresh != nil {
-					if tok2, err2 := getXSRF(fresh.Cookie, proxyURL); err2 == nil {
+					if tok2, err2 := getXSRF(fresh.Cookie, proxyURL, ctx); err2 == nil {
 						logf("[cookie] 账号 #%d 轮转后恢复可用", acct.ID)
 						acct = fresh
 						cookieStr, sapisid, xsrfToken = fresh.Cookie, extractSAPISID(fresh.Cookie), tok2
@@ -504,7 +505,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		}
 		nImg, nVid := 0, 0
 		for _, u := range pending {
-			ref, uerr := uploadBytes(cookieStr, proxyURL, u.Data, u.Name)
+			ref, uerr := uploadBytes(cookieStr, proxyURL, u.Data, u.Name, ctx)
 			if uerr != nil {
 				return attrib(fmt.Errorf("上传附件 %s 失败: %w", u.Name, uerr))
 			}
@@ -521,7 +522,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	// prompt 超长时转成文本附件。要等挑完号和出口才能做：上传要 cookie，
 	// 而且必须走跟正式请求同一个出口。
 	budget := rtCfg().MaxPromptBytes
-	if p, f, used, ferr := prepareContextFile(prompt, latest, budget, cookieStr, proxyURL); ferr != nil {
+	if p, f, used, ferr := prepareContextFile(prompt, latest, budget, cookieStr, proxyURL, ctx); ferr != nil {
 		return attrib(ferr)
 	} else if used {
 		prompt = p
@@ -677,7 +678,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		maxAttempts = 1
 	}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB)
+		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB, ctx)
 		if len(setCookie) > 0 && cookieID > 0 {
 			if merged := mergeSetCookie(cookieStr, setCookie); merged != cookieStr {
 				cookieStr = merged
@@ -720,7 +721,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			if statusCode == 400 && isXSRFError(string(raw)) && cookieStr != "" && !xsrfRetried {
 				xsrfRetried = true
 				invalidateXSRF(cookieStr)
-				if tok, e := getXSRF(cookieStr, proxyURL); e == nil {
+				if tok, e := getXSRF(cookieStr, proxyURL, ctx); e == nil {
 					body = buildBody(tok)
 					geminiHeaders = buildGeminiHeaders(cookieStr, sapisid, mc.HexID)
 					geminiHeaders["x-goog-ext-525001261-jspb"] = modelHeader
@@ -920,12 +921,12 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			mediaTimeout := 120 * time.Second
 			if mc.Tool == toolMusic {
 				// Harus melebihi total polling musik (30 x 5s = 150s).
-				mediaTimeout = 200 * time.Second
+				mediaTimeout = 600 * time.Second
 			}
 			if mc.Tool == toolVideo {
 				// Harus lebih besar dari total polling video (48 x 10s = 480s),
 				// kalau tidak batas ini yang memotong lebih dulu.
-				mediaTimeout = 540 * time.Second
+				mediaTimeout = 960 * time.Second
 			}
 			type mediaResult struct {
 				arts []MediaArtifact
@@ -1052,11 +1053,12 @@ func modelServedMatches(mc ModelConfig, served string) bool {
 		return strings.Contains(low, "nano") || strings.Contains(low, "image") ||
 			strings.Contains(low, "banana")
 	case toolMusic:
-		// Sama seperti canvas: Google melaporkan model chat di baliknya
-		// ("3.6 Flash"), bukan "Lyria". Menilai dari label model membuat
-		// setiap permintaan musik ditolak sebagai downgrade palsu. Sinyal
-		// yang sah adalah ada/tidaknya artefak audio, diperiksa di pipeline.
-		return true
+		// Musik BUKAN kasus seperti canvas: saat lagunya benar-benar dibuat,
+		// Google melaporkan "Lyria 3.5" (terverifikasi di tabel requests).
+		// Penolakan "3.6 Flash" berarti akun itu memang tidak punya akses saat
+		// itu, jadi gate ini berguna -- biarkan gagal cepat lalu pindah akun,
+		// bukan menggantung sampai polling habis.
+		return strings.Contains(low, "lyria") || strings.Contains(low, "music")
 	case toolCanvas:
 		// Canvas sengaja memakai model chat (hexFlash36) dan mengembalikan HTML
 		// inline — Google memang melaporkan "3.6/3.8 Flash", bukan "canvas".
@@ -1221,13 +1223,17 @@ func buildGeminiHeaders(cookieStr, sapisid, hexID string) map[string]string {
 // __Secure-3PSIDCC，浏览器收下再带回去。一直发旧值的客户端会被判定为过期会话，
 // 实测号活一两小时就失效 —— 所以这些必须收下来并写回账号。
 func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL string,
-	onLine func(string)) (int, []byte, int64, []string, error) {
+	onLine func(string), ctxs ...context.Context) (int, []byte, int64, []string, error) {
 	sendAt := time.Now()
+	ctx := optCtx(ctxs)
 	if proxyURL != "" {
 		// 走 stdlib 的 http.ProxyURL，已知能过 socks5/socks5h。
 		req, err := http.NewRequest("POST", endpoint, strings.NewReader(body))
 		if err != nil {
 			return 0, nil, 0, nil, err
+		}
+		if ctx != nil {
+			req = req.WithContext(ctx)
 		}
 		applyChromeHeaders(req)
 		for k, v := range headers {
@@ -1250,6 +1256,9 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 	req, err := fhttp.NewRequest("POST", endpoint, strings.NewReader(body))
 	if err != nil {
 		return 0, nil, 0, nil, err
+	}
+	if ctx != nil {
+		req = req.WithContext(ctx)
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -129,9 +130,9 @@ func rejectUnsupported(req map[string]interface{}, messages []map[string]interfa
 	return nil
 }
 
-func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interface{},
+func callGemini(ctx context.Context, prompt, latest string, mc ModelConfig, tools []map[string]interface{},
 	images []pendingUpload, onDelta, onReasoning func(string), baseURL ...string) (string, []ToolCall, *StreamResult, error) {
-	res, err := streamGenerateWithFiles(prompt, latest, mc, images, onDelta, onReasoning)
+	res, err := streamGenerateWithFiles(ctx, prompt, latest, mc, images, onDelta, onReasoning)
 	if err != nil {
 		// res 非 nil：失败时它只带归属（哪个号 / 哪个出口），给 recordRequest 用
 		return "", nil, res, err
@@ -288,6 +289,40 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	cid := "chatcmpl-" + randHex(12)
 	created := time.Now().Unix()
 
+	// 媒体模型默认异步:立刻返回 job,不把等图/等乐的几十秒到几分钟挂在同一个
+	// HTTP 请求上(9router 侧 ~129s 就会掐断)。逃生口 —— 需要旧的阻塞行为时在
+	// URL 上加 ?sync=1。非媒体模型(modelCfg.Tool == 0)完全不受影响。
+	if modelCfg.Tool != 0 && r.URL.Query().Get("sync") != "1" {
+		j, deduped := startOrDedupMediaJob(modelName, prompt, images, reqBaseURL, r.Header.Get("Idempotency-Key"))
+		w.Header().Set("x-novagemini-job", j.ID)
+		note := "queued as async media job " + j.ID
+		if deduped {
+			w.Header().Set("x-novagemini-job-dedup", "1")
+			note = "deduped to in-flight job " + j.ID
+		}
+		notice := fmt.Sprintf("media job started: %s\nresult: %s/v1/media/%s\ngallery: %s/gallery",
+			j.ID, reqBaseURL, j.ID, reqBaseURL)
+		recordRequest("chat.completions", modelName, prompt, "", nil, 202, note, stream)
+		if stream {
+			sse := newSSEWriter(w, cid, created, modelName)
+			sse.SendContent(notice)
+			sse.Finish("stop", nil)
+			return
+		}
+		writeJSON(w, 200, map[string]interface{}{
+			"id":      cid,
+			"object":  "chat.completion",
+			"created": created,
+			"model":   modelName,
+			"choices": []map[string]interface{}{{
+				"index":         0,
+				"message":       map[string]interface{}{"role": "assistant", "content": notice},
+				"finish_reason": "stop",
+			}},
+		})
+		return
+	}
+
 	// 带 tools 时正文过一道围栏闸门：```tool_call``` 块要完整文本才能解析，
 	// 直接转发会把围栏原文推给客户端，所以只放行确定不在围栏里的部分。
 	// 思考链跟围栏无关，两种情况都直接流。
@@ -312,7 +347,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
 		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning)
 	} else {
-		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning, reqBaseURL)
+		text, toolCalls, res, err = callGemini(r.Context(), prompt, latest, modelCfg, tools, images, onDelta, onReasoning, reqBaseURL)
 	}
 	if err != nil {
 		recordRequest("chat.completions", modelName, prompt, "", res, 502, err.Error(), stream)
@@ -668,7 +703,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
 		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil)
 	} else {
-		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil, reqBaseURL)
+		text, toolCalls, res, err = callGemini(r.Context(), prompt, latest, modelCfg, tools, images, onDelta, nil, reqBaseURL)
 	}
 	if err != nil {
 		recordRequest("responses", modelName, prompt, "", res, 502, err.Error(), stream)

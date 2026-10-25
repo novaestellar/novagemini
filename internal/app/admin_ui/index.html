@@ -409,6 +409,45 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
   /* 逐项模式列了 7 个框，窄屏下别把弹窗撑爆 */
   .modal.wide { width: min(620px, 94vw); }
 
+  /* ── 媒体产物(画廊)────────────────────────────────────────────────────
+     跟其它页同一套语言:白卡、无描边、16px 圆角、靠底色反差分离。日期抬头
+     吸顶在 topbar 下方,滚动时始终知道自己在哪一天。 */
+  .gal-day { position: sticky; top: var(--topbar-h); z-index: 2;
+             background: var(--bg); padding: 8px 2px;
+             margin-top: 20px; display: flex; align-items: baseline; gap: 10px;
+             font-size: 12.5px; font-weight: 500; color: var(--text-2);
+             font-variant-numeric: tabular-nums; }
+  .gal-day:first-child { margin-top: 0; }
+  .gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
+              gap: 14px; }
+  .gal-card { background: var(--card); border-radius: var(--r-card); overflow: hidden;
+              box-shadow: var(--shadow); display: flex; flex-direction: column;
+              min-width: 0; }
+  .gal-thumb { aspect-ratio: 4 / 3; background: var(--surface-hi);
+               display: flex; align-items: center; justify-content: center;
+               overflow: hidden; }
+  .gal-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gal-thumb video { width: 100%; height: 100%; object-fit: contain;
+                     background: var(--surface-press); display: block; }
+  /* 音频没有画面,给它一条自己的高度,别撑成 4:3 的空盒子 */
+  .gal-thumb.audio { aspect-ratio: auto; padding: 24px 14px; }
+  .gal-thumb audio { width: 100%; }
+  .gal-dl { color: var(--nav-on-fg); font-size: 12.5px; text-decoration: none; }
+  .gal-dl:hover { text-decoration: underline; }
+  .gal-meta { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 3px;
+              min-width: 0; }
+  .gal-name { font-size: 12.5px; color: var(--text-2); overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+  .gal-sub { display: flex; justify-content: space-between; gap: 8px;
+             font-size: 11.5px; color: var(--muted);
+             font-variant-numeric: tabular-nums; }
+  .gal-auto { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+              color: var(--muted); cursor: pointer; user-select: none; white-space: nowrap; }
+  .gal-auto input { width: 15px; height: 15px; accent-color: var(--nav-on-fg); }
+  @media (max-width: 900px) {
+    .gal-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  }
+
   @media (max-width: 1100px) { .grid-main { grid-template-columns: 1fr; } }
   @media (max-width: 900px) {
     #app { flex-direction: column; }
@@ -782,6 +821,30 @@ const pages = {
     `;
   },
 
+  gallery: async () => {
+    // /api/media 挂在站点根(见 app.go),不在 /admin/api 下。面板里的地址都是
+    // 相对的,写成 api/media 会解析成 /admin/api/media(404),这里必须用绝对路径
+    // —— 列表里返回的 /files/... 也是绝对路径,这两个端点本来就按站点根挂载。
+    const r = await fetch('/api/media', { credentials: 'include', cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const items = await r.json();
+    return `
+      <div class="panel">
+        <h2>媒体产物
+          <span class="controls">
+            <span class="badge muted" id="galCount">${galCount((items || []).length)}</span>
+            <label class="gal-auto" title="每 5 秒重新拉一次列表,新产物自动出现">
+              <input type="checkbox" id="galAuto">自动刷新
+            </label>
+            <button onclick="loadGallery(false)">刷新</button>
+          </span>
+        </h2>
+        <p class="lede">生成图片 / 音乐 / 视频后的产物都落在 data/media 下,按日期倒序分组。</p>
+        <div id="galRoot">${galleryBody(items || [])}</div>
+      </div>
+    `;
+  },
+
   settings: async () => {
     const k = await api('api/apikey');
     return `
@@ -849,6 +912,96 @@ const pages = {
     `;
   },
 };
+
+// ─── 媒体产物(画廊)────────────────────────────────────────────────────────
+// 只读地照 /api/media 画一遍:按 path 前缀的日期分组,图片/音频/视频各用对应
+// 标签,其它类型给一个下载入口。样式全走页面已有的 token 和卡片语言。
+
+let galleryTimer = null;
+
+// 自动刷新的定时器不归 pageSeq 管(它只能丢弃已发出的请求),切页时必须显式停掉,
+// 否则离开画廊后它还在每 5 秒打一次 /api/media。
+function stopGalleryAuto() {
+  if (galleryTimer) { clearInterval(galleryTimer); galleryTimer = null; }
+}
+
+function galCount(n) { return n + (LANG === 'en' ? (n === 1 ? ' item' : ' items') : ' 项'); }
+
+// 面板里只有 fmt.num / fmt.ms / fmt.pct,没有字节格式化,这里照同样的口径补一个。
+function fmtBytes(n) {
+  n = n || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+// 分组看 path 的第一段 —— 写入时就是 YYYY-MM-DD(见 media_store.go);万一不是,退回 mtime。
+function galDay(it) {
+  const p = String(it.path || '').split('/')[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(p)) return p;
+  const d = new Date((it.mtime || 0) * 1000);
+  const pad = x => String(x).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+function galCard(it) {
+  const mime = it.mime || '', url = escapeHtml(it.url || ''), name = escapeHtml(it.name || '');
+  let thumbCls = 'gal-thumb', media;
+  if (mime.indexOf('image/') === 0) {
+    media = `<img loading="lazy" src="${url}" alt="${name}">`;
+  } else if (mime.indexOf('video/') === 0) {
+    media = `<video controls preload="metadata" src="${url}"></video>`;
+  } else if (mime.indexOf('audio/') === 0) {
+    thumbCls += ' audio';             // 音频没有画面,别撑成 4:3 的空盒子
+    media = `<audio controls preload="none" src="${url}"></audio>`;
+  } else {
+    media = `<a class="gal-dl" href="${url}" download>下载</a>`;
+  }
+  return `
+    <div class="gal-card">
+      <div class="${thumbCls}">${media}</div>
+      <div class="gal-meta">
+        <span class="gal-name" title="${escapeHtml(it.path || it.name || '')}">${name}</span>
+        <span class="gal-sub"><span>${fmtBytes(it.bytes)}</span><span>${fmt.ts(it.mtime)}</span></span>
+      </div>
+    </div>`;
+}
+
+// 列表已经是 mtime 倒序,按出现顺序收拢成天即可,不再排一次。
+function galleryBody(items) {
+  if (!items.length) {
+    return '<div class="empty">还没有产物。生成图片 / 音乐 / 视频后会出现在这里。</div>';
+  }
+  const order = [], byDay = new Map();
+  for (const it of items) {
+    const d = galDay(it);
+    if (!byDay.has(d)) { byDay.set(d, []); order.push(d); }
+    byDay.get(d).push(it);
+  }
+  return order.map(d => `
+    <div class="gal-day">${d}<span class="muted">${galCount(byDay.get(d).length)}</span></div>
+    <div class="gal-grid">${byDay.get(d).map(galCard).join('')}</div>`).join('');
+}
+
+// 手动刷新和自动刷新都走这里,只换 #galRoot,不整页重渲染。
+async function loadGallery(silent) {
+  const root = document.getElementById('galRoot');
+  if (!root) return;
+  let items;
+  try {
+    const r = await fetch('/api/media', { credentials: 'include', cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    items = await r.json();
+  } catch (e) {
+    if (silent) return;               // 自动刷新失败时留着上一次结果,别闪成空
+    root.innerHTML = '<div class="empty">' + escapeHtml(e.message || 'load failed') + '</div>';
+    return;
+  }
+  root.innerHTML = galleryBody(items || []);
+  const c = document.getElementById('galCount');
+  if (c) c.textContent = galCount((items || []).length);
+}
 
 // ─── Charts + handlers ──────────────────────────────────────────────────────
 
@@ -1713,6 +1866,11 @@ async function switchPage(name, force = false) {
   const seq = ++pageSeq;
   currentPage = name;
 
+  // 定时器不归 pageSeq 管(它只能丢弃已发出的请求),所以切页时显式停掉画廊的自动刷新。
+  if (name !== 'gallery') stopGalleryAuto();
+  // 深链/书签:把当前页写进 hash。用 replaceState,点导航不会塞满浏览器历史。
+  try { history.replaceState(null, '', '#' + name); } catch (e) {}
+
   document.querySelectorAll('nav button').forEach(b =>
     b.classList.toggle('active', b.dataset.page === name));
   const titleEl = document.getElementById('pageTitle');
@@ -1747,6 +1905,14 @@ async function switchPage(name, force = false) {
     document.getElementById('reqSize').onchange = () => { reqOffset = 0; loadReqs(); };
     await loadReqs();
   }
+  if (name === 'gallery') {
+    stopGalleryAuto();               // 重新进画廊时先清掉上一次可能还在跑的定时器
+    const auto = document.getElementById('galAuto');
+    if (auto) auto.onchange = () => {
+      stopGalleryAuto();
+      if (auto.checked) galleryTimer = setInterval(() => loadGallery(true), 5000);
+    };
+  }
   if (name === 'settings') {
     await loadRtCfg();
   }
@@ -1762,6 +1928,8 @@ const ICONS = {
   proxies: '<path d="M12 2a2.5 2.5 0 011 4.79V9h4a2 2 0 012 2v1.21a2.5 2.5 0 11-2 0V11h-4v1.21a2.5 2.5 0 11-2 0V11H7v1.21a2.5 2.5 0 11-2 0V11a2 2 0 012-2h4V6.79A2.5 2.5 0 0112 2z"/>',
   settings: '<path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>',
   cookies: '<path d="M12 2a10 10 0 100 20 10 10 0 000-20zm-1 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm7 3a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM8 13a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm6 4a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z"/>',
+  // 影集:「一大一小两张叠着的图片」,和旁边 Cookie/设置那几个同属 Material 轮廓。
+  gallery: '<path d="M22 16V4c0-1.1-.9-2-2-2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2zm-11-4l2.03 2.71L16 11l4 5H8l3-4zM2 6v14c0 1.1.9 2 2 2h14v-2H4V6H2z"/>',
   menu: '<path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>',
   logout: '<path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5-5-5zM4 5h8V3H4a2 2 0 00-2 2v14a2 2 0 002 2h8v-2H4V5z"/>',
 };
@@ -1770,10 +1938,12 @@ const NAV = [
   ['requests', '请求记录'],
   ['proxies', '代理池'],
   ['cookies', 'Cookie 池'],
+  ['gallery', '媒体产物'],
   ['settings', '设置'],
 ];
 const PAGE_TITLES = {
-  dashboard: '概览', requests: '请求记录', proxies: '代理池', cookies: 'Cookie 池', settings: '设置',
+  dashboard: '概览', requests: '请求记录', proxies: '代理池', cookies: 'Cookie 池',
+  gallery: '媒体产物', settings: '设置',
 };
 
 function toggleSidebar() {
@@ -1820,7 +1990,10 @@ function renderShell() {
       <main id="main"></main>
     </div>
   `;
-  switchPage('dashboard');
+  // 深链:/gallery 现在会 302 到这里并带上 #gallery,书签也走同一条路。
+  // 只认 PAGE_TITLES 里有的键(hasOwnProperty,免得 #constructor 之类撞上原型链)。
+  const hashPage = decodeURIComponent((location.hash || '').replace(/^#\/?/, ''));
+  switchPage(Object.prototype.hasOwnProperty.call(PAGE_TITLES, hashPage) ? hashPage : 'dashboard');
   loadSideStat();
 }
 
@@ -1920,6 +2093,11 @@ const I18N_EN = {
   '请求记录': 'Requests',
   '代理池': 'Proxy Pool',
   'Cookie 池': 'Cookie Pool',
+  '媒体产物': 'Gallery',
+  '自动刷新': 'Auto refresh',
+  '下载': 'Download',
+  '生成图片 / 音乐 / 视频后的产物都落在 data/media 下,按日期倒序分组。': 'Artifacts from image / music / video generation land in data/media, grouped by day, newest first.',
+  '还没有产物。生成图片 / 音乐 / 视频后会出现在这里。': 'No artifacts yet. Generated images / music / video will show up here.',
   '设置': 'Settings',
   '运行中': 'Running',
   '无法连接': 'Disconnected',

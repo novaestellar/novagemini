@@ -61,3 +61,7 @@ docs/local/
 # Tangkapan sesi nyata (ID percakapan asli) - fixture lokal, tidak untuk dibagikan
 internal/app/testdata/search_raw.txt
 
+
+# Python scratch (tidak untuk repo)
+__pycache__/
+*.pyc

@@ -118,6 +118,13 @@ func Run() {
 	// /v1/videos —— OpenAI(Sora) 形状的异步视频生成。POST 建任务，GET 轮询，GET .../content 下 MP4。
 	mux.HandleFunc("/v1/videos", requireAPIKey(handleCreateVideo))
 	mux.HandleFunc("/v1/videos/", requireAPIKey(handleVideoItem))
+	// /v1/media —— 通用异步媒体任务(生图/音乐/视频/画布)。POST 建任务立即返回,
+	// GET 轮询,GET .../content 取第一份产物原始字节。
+	mux.HandleFunc("/v1/media", requireAPIKey(handleCreateMedia))
+	mux.HandleFunc("/v1/media/", requireAPIKey(handleMediaItem))
+	// 产物画廊:只读列表 + 自包含页面(/files/ 由 admin 区提供)。
+	mux.HandleFunc("/api/media", handleMediaList)
+	mux.HandleFunc("/gallery", handleGallery)
 	// MCP over HTTP（Streamable HTTP）：跟 OpenAI 接口同进程同端口，暴露 web_search。
 	// 用同一把 API key 鉴权，客户端配 Authorization: Bearer <key> 连这个 URL。
 	mux.HandleFunc("/mcp", requireAPIKey(handleMCPHTTP))

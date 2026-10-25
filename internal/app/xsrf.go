@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -61,7 +62,7 @@ func invalidateXSRF(cookie string) {
 
 // getXSRF 取该 cookie 对应的 XSRF token；命中缓存且没过期就直接返回。
 // cookie 为空（匿名）时返回空串——匿名请求不需要这个字段。
-func getXSRF(cookie, proxyURL string) (string, error) {
+func getXSRF(cookie, proxyURL string, ctxs ...context.Context) (string, error) {
 	if cookie == "" {
 		return "", nil
 	}
@@ -74,7 +75,7 @@ func getXSRF(cookie, proxyURL string) (string, error) {
 	}
 	xsrfMu.Unlock()
 
-	e, err := fetchAppTokens(cookie, proxyURL)
+	e, err := fetchAppTokens(cookie, proxyURL, ctxs...)
 	if err != nil {
 		return "", err
 	}
@@ -85,7 +86,7 @@ func getXSRF(cookie, proxyURL string) (string, error) {
 }
 
 // getUploadTokens 取上传要用的 Push-ID / X-Client-Pctx，跟 XSRF token 同一份缓存。
-func getUploadTokens(cookie, proxyURL string) (pushID, pctx string, err error) {
+func getUploadTokens(cookie, proxyURL string, ctxs ...context.Context) (pushID, pctx string, err error) {
 	key := cookieKey(cookie)
 
 	xsrfMu.Lock()
@@ -95,7 +96,7 @@ func getUploadTokens(cookie, proxyURL string) (pushID, pctx string, err error) {
 	}
 	xsrfMu.Unlock()
 
-	e, err := fetchAppTokens(cookie, proxyURL)
+	e, err := fetchAppTokens(cookie, proxyURL, ctxs...)
 	if err != nil {
 		return "", "", err
 	}
@@ -109,7 +110,8 @@ func getUploadTokens(cookie, proxyURL string) (pushID, pctx string, err error) {
 // 走跟主请求相同的出口：配了代理走 stdlib，没配走 tls-client，
 // 免得页面里取到的 token 和后续请求来自两个不同 IP。
 // cookie 传空串就是匿名抓（页面照样返回，只是没有登录态字段）。
-func fetchAppPage(cookie, proxyURL string) ([]byte, error) {
+func fetchAppPage(cookie, proxyURL string, ctxs ...context.Context) ([]byte, error) {
+	ctx := optCtx(ctxs)
 	const pageURL = "https://gemini.google.com/app"
 	headers := map[string]string{
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -124,6 +126,9 @@ func fetchAppPage(cookie, proxyURL string) ([]byte, error) {
 		req, err := http.NewRequest("GET", pageURL, nil)
 		if err != nil {
 			return nil, err
+		}
+		if ctx != nil {
+			req = req.WithContext(ctx)
 		}
 		applyChromeHeaders(req)
 		for k, v := range headers {
@@ -146,6 +151,9 @@ func fetchAppPage(cookie, proxyURL string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		if ctx != nil {
+			req = req.WithContext(ctx)
+		}
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
@@ -166,8 +174,8 @@ func fetchAppPage(cookie, proxyURL string) ([]byte, error) {
 }
 
 // fetchAppTokens 抓一次 /app 页面，把三个 token 一起抠出来。
-func fetchAppTokens(cookie, proxyURL string) (xsrfEntry, error) {
-	body, err := fetchAppPage(cookie, proxyURL)
+func fetchAppTokens(cookie, proxyURL string, ctxs ...context.Context) (xsrfEntry, error) {
+	body, err := fetchAppPage(cookie, proxyURL, ctxs...)
 	if err != nil {
 		return xsrfEntry{}, err
 	}
