@@ -437,11 +437,18 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	var prompt string
 	if fresh {
 		conv = &convState{}
+		// 首轮带上 tools 指令：模型要靠它知道怎么吐 tool_call 围栏，续接轮不再重发
+		//（指令已在服务端首轮历史里）。
+		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
+
 		// 有 cookie 池就用登录号（能力更全），否则匿名（首轮就地拿 session cookie）。
 		// #20 匿名优先：模型不需要登录态时不占号（多轮已被 gate 限成无图无工具，附件
 		// 恒无，所以第二个参数传 false）。必须在调用前短路：pickCookieAccount 会更新
 		// last_used_at，调了不用等于白占一轮。
-		if !anonFirstEligible(mc, false) {
+		//
+		// 挑号要在 prompt 算完之后：prompt 超 128 KB 时匿名没法把它转成附件，
+		// 只有 cookie 能救，所以长度是决定要不要占号的一个输入。
+		if !anonFirstEligible(mc, false, len(prompt)) {
 			if a, ok := pickCookieAccount(); ok {
 				conv.cookie = a.Cookie
 				conv.sapisid = extractSAPISID(a.Cookie)
@@ -450,9 +457,6 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 				conv.proxyID = a.ProxyID
 			}
 		}
-		// 首轮带上 tools 指令：模型要靠它知道怎么吐 tool_call 围栏，续接轮不再重发
-		//（指令已在服务端首轮历史里）。
-		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
 	} else {
 		prompt = formatNewTurn(messages[len(messages)-1])
 	}

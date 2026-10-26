@@ -143,23 +143,34 @@ func modelNeedsLogin(mc ModelConfig) bool {
 		mc.Thinking || mc.Tool > 0
 }
 
-// preferAnonModel menandai model yang di server ini HANYA jalan lewat jalur
+// preferAnonModel menandai model yang di server ini LEBIH BAIK jalan lewat jalur
 // anonim. Terbukti dari uji langsung ke akun berbayar (nova-ff2):
 //   4 Argon + cookie   -> 200, served "4 Argon", isi: "Sorry, something went wrong"
 //   4 Argon tanpa cookie -> 200, served "4 Argon", isi: jawaban lengkap
-// Jadi menambahkan Argon ke modelNeedsLogin (memaksa jalur cookie) justru
-// merusaknya. Argon tetap boleh tampil tanpa cookie dan tetap diarahkan ke
-// jalur anonim walau pool punya akun.
+//
+// PENTING: ini preferensi, bukan larangan. Kalau prompt melebihi batas protokol
+// 128 KB, jalur anonim mustahil dipakai (prepareContextFile butuh cookie untuk
+// mengunggah prompt sebagai lampiran teks), jadi anonFirstEligible menimpanya.
 func preferAnonModel(mc ModelConfig) bool {
 	return mc.HexID == hexArgon4 && mc.Tool == 0
 }
 
 // anonFirstEligible 判断「匿名优先」开关下这次请求能不能走匿名（不占 cookie 账号）：
-// 开关开着 + 没带附件 + 模型不需要登录态。附件（图/视频）在对话里引用必须登录
-// （匿名会被上游回 1100），所以带附件时一律挑号。开关关着永远返回 false（保持旧行为：
-// 池里有号就用号）。
-func anonFirstEligible(mc ModelConfig, hasAttachment bool) bool {
+// 开关开着 + 没带附件 + 模型不需要登录态 + prompt 没超协议上限。
+//
+// 两个例外会强制走 cookie：
+//   - 附件（图/视频）：在对话里引用必须登录，匿名会被上游回 1100。
+//   - prompt 超过 MaxPromptBytes：匿名没法上传，prepareContextFile 直接放弃
+//     转换，请求必然 502。这是会话被撑大后整段对话死掉的直接原因。
+//
+// 开关关着永远返回 false（保持旧行为：池里有号就用号）。
+func anonFirstEligible(mc ModelConfig, hasAttachment bool, promptBytes int) bool {
 	if hasAttachment {
+		return false
+	}
+	// prompt 太大时唯一的活路是上传成文本附件，而上传需要 cookie。这里宁可
+	// 打破模型的匿名偏好，也好过必然 502 —— 让付费号来答总比答不了强。
+	if budget := rtCfg().MaxPromptBytes; budget > 0 && promptBytes > budget {
 		return false
 	}
 	if preferAnonModel(mc) {
@@ -384,8 +395,10 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 	// 不发请求，真正发请求的是下面的 getXSRF，它在拿到 slot 之后。
 	// #20 匿名优先：不需要登录态能力时不占用 cookie 账号，走匿名省额度（见 anonFirstEligible）。
 	// 带附件（图/视频）时不能走匿名——下面 uploadBytes 那段会因 cookieStr=="" 直接报错。
+	// prompt 超过 128 KB 时同样不能走匿名：prepareContextFile 只能靠 cookie 把
+	// 超长对话转成文本附件，匿名走这条路必然 502。
 	var acct *CookieAccount
-	if !anonFirstEligible(mc, len(pending) > 0) {
+	if !anonFirstEligible(mc, len(pending) > 0, len(prompt)) {
 		if a, ok := pickCookieAccountFor(mc, nil); ok {
 			acct = a
 		}

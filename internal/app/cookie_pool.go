@@ -443,7 +443,6 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 		return nil, false
 	}
 	defer rows.Close()
-	var fallback *CookieAccount
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
@@ -454,21 +453,22 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 			continue
 		}
 		if mc.HexID != "" && !probeForAccount(a.ID).supportsModel(mc) {
-			// Simpan sebagai kandidat terakhir: kalau semua akun kena saring,
-			// lebih baik mencoba satu daripada langsung menolak request.
-			if fallback == nil {
-				c := a
-				fallback = &c
-			}
 			continue
 		}
 		_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), a.ID)
 		return &a, true
 	}
-	if fallback != nil {
-		logf("[cookie] tidak ada akun yang jelas mendukung model ini, coba #%d sebagai upaya terakhir", fallback.ID)
-		_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), fallback.ID)
-		return fallback, true
+	// Tidak ada akun yang mendukung model ini: kembalikan false.
+	//
+	// Dulu di sini ada jalur "upaya terakhir" yang mengembalikan akun pertama yang
+	// tersaring. Itu justru lebih buruk daripada tidak memilih sama sekali: akun
+	// free tanpa rollout `Argon4p0` selalu menjawab 200 dengan model lain, dan
+	// deteksi downgrade di pemanggil lalu mengubahnya jadi 502 pasti. Pengalaman
+	// nyata: setiap `gemini-4-argon` + cookie mendarat di akun free dan gagal,
+	// sementara jalur anonim untuk model yang sama sukses. Lebih baik serahkan ke
+	// pemanggil supaya jatuh ke anonim / memberi error yang jujur.
+	if mc.HexID != "" {
+		logf("[cookie] tidak ada akun yang mendukung model %s; menyerahkan ke jalur anonim", modelLabel(mc))
 	}
 	return nil, false
 }

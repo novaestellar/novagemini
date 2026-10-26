@@ -356,10 +356,10 @@ func TestPreferAnonModel(t *testing.T) {
 		rtVal.AnonFirst = prev
 		rtMu.Unlock()
 	}()
-	if !anonFirstEligible(Models["gemini-4-argon"], false) {
+	if !anonFirstEligible(Models["gemini-4-argon"], false, 0) {
 		t.Error("Argon 应始终走匿名，即使 anon_first 关闭")
 	}
-	if anonFirstEligible(Models["gemini-3.1-pro"], false) {
+	if anonFirstEligible(Models["gemini-3.1-pro"], false, 0) {
 		t.Error("3.1 Pro 不该走匿名")
 	}
 }
@@ -437,25 +437,57 @@ func TestAnonFirstEligible(t *testing.T) {
 	think := Models["gemini-3.6-flash-thinking"]
 
 	set(false)
-	if anonFirstEligible(plain, false) {
+	if anonFirstEligible(plain, false, 0) {
 		t.Error("开关关时应恒 false（池里有号就用号）")
 	}
 
 	set(true)
-	if !anonFirstEligible(plain, false) {
+	if !anonFirstEligible(plain, false, 0) {
 		t.Error("开 + 纯文本无附件应走匿名")
 	}
-	if anonFirstEligible(plain, true) {
+	if anonFirstEligible(plain, true, 0) {
 		t.Error("带附件必须挑号（匿名引用被上游 1100 拒）")
 	}
-	if anonFirstEligible(pro, false) {
+	if anonFirstEligible(pro, false, 0) {
 		t.Error("3.1 Pro 需登录，不能走匿名")
 	}
-	if anonFirstEligible(img, false) {
+	if anonFirstEligible(img, false, 0) {
 		t.Error("生图需登录，不能走匿名")
 	}
-	if anonFirstEligible(think, false) {
+	if anonFirstEligible(think, false, 0) {
 		t.Error("扩展思考需登录，不能走匿名")
+	}
+}
+
+// Prompt 超过 protokol 上限时必须改走 cookie：匿名没法把超长对话转成附件，
+// prepareContextFile 会因为 cookie=="" 直接放弃，请求必然 502。这条回归
+// 覆盖的正是「会话涨到 234 KB 后整段对话发不出去」的真实故障。
+func TestAnonFirstEligible_PromptTooBigForcesCookie(t *testing.T) {
+	rtMu.Lock()
+	prevAnon, prevMax := rtVal.AnonFirst, rtVal.MaxPromptBytes
+	rtVal.AnonFirst = true
+	rtVal.MaxPromptBytes = 128000
+	rtMu.Unlock()
+	defer func() {
+		rtMu.Lock()
+		rtVal.AnonFirst, rtVal.MaxPromptBytes = prevAnon, prevMax
+		rtMu.Unlock()
+	}()
+
+	// Argon 平时prefer anon，但超长时必须让位给 cookie —— 否则永远 502。
+	argon := Models["gemini-4-argon"]
+	if !anonFirstEligible(argon, false, 1000) {
+		t.Error("prompt 正常时 Argon 仍应走匿名")
+	}
+	if anonFirstEligible(argon, false, 200000) {
+		t.Error("prompt 超 128 KB 时 Argon 必须改走 cookie，否则无法转附件")
+	}
+	// 边界：正好等于预算不算超。
+	if !anonFirstEligible(argon, false, 128000) {
+		t.Error("正好等于预算时仍可走匿名")
+	}
+	if anonFirstEligible(argon, false, 128001) {
+		t.Error("超出预算 1 字节也必须转 cookie")
 	}
 }
 

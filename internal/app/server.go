@@ -343,8 +343,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
-	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
-		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
+	// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
+	//
+	// 但 prompt 超过协议上限时必须绕开：多轮路径没有附件通道，只能把整段 prompt
+	// 塞进 inner[0] 一次性发出去，必然被上游 128 KB 拒掉。走 callGemini 才能让
+	// prepareContextFile 把超长对话转成文本附件 —— 这是长会话唯一活路。
+	promptTooBig := rtCfg().MaxPromptBytes > 0 && len(prompt) > rtCfg().MaxPromptBytes
+	if promptTooBig && rtCfg().MultiTurn {
+		logf("[conv] prompt %d bytes melebihi batas, kali ini lewati multi-turn dan pakai jalur lampiran", len(prompt))
+	}
+	if rtCfg().MultiTurn && !promptTooBig && len(images) == 0 && modelCfg.Tool == 0 {
 		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning)
 	} else {
 		text, toolCalls, res, err = callGemini(r.Context(), prompt, latest, modelCfg, tools, images, onDelta, onReasoning, reqBaseURL)
@@ -700,7 +708,9 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
-	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
+	// 同 chat 路径：prompt 超上限时绕开多轮，否则没有附件通道、必然 128 KB 被拒。
+	bigPrompt := rtCfg().MaxPromptBytes > 0 && len(prompt) > rtCfg().MaxPromptBytes
+	if rtCfg().MultiTurn && !bigPrompt && len(images) == 0 && modelCfg.Tool == 0 {
 		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil)
 	} else {
 		text, toolCalls, res, err = callGemini(r.Context(), prompt, latest, modelCfg, tools, images, onDelta, nil, reqBaseURL)
