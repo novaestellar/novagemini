@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -217,14 +219,61 @@ func runMediaJob(j *mediaJob, images []pendingUpload, baseURL string) {
 	finishMediaJob(j, arts, text, "")
 }
 
-// mediaLinkRe mencocokkan keempat bentuk link yang dihasilkan artifactLink,
+// mediaLinkRe mencocokkan kelima bentuk link yang dihasilkan artifactLink,
 // mengambil HANYA target di dalam tanda kurung:
 //
-//	![image](<target>)  [video](<target>)  [audio](<target>)  [media](<target>)
+//	![image](<target>)  [video](..)  [audio](..)  [media](..)  [canvas](..)
 //
 // Target bisa berupa URL (/files/...) atau data URL (data:<mime>;base64,<...>).
 // Base64 tak mengandung ')', dan URL /files/... juga tidak, jadi [^)]* aman.
-var mediaLinkRe = regexp.MustCompile(`!\[image\]\(([^)]*)\)|\[(?:video|audio|media)\]\(([^)]*)\)`)
+//
+// `canvas` WAJIB ikut: dokumen canvas tidak lewat res.Artifacts (isinya inline
+// di StreamGenerate, bukan hasil unduhan), jadi satu-satunya jejaknya di konten
+// adalah link ini. Tanpa cabang ini job canvas selesai dengan artifacts kosong —
+// itulah sebabnya dulu tidak pernah ada artifact berjenis canvas.
+var mediaLinkRe = regexp.MustCompile(`!\[image\]\(([^)]*)\)|\[(video|audio|media|canvas)\]\(([^)]*)\)`)
+
+// mediaFileSize mengembalikan ukuran file untuk URL /files/<rel> (absolut maupun
+// relatif). Dipakai saat artefak disintesis dari link — byte-nya sudah ada di
+// disk, tapi tidak dipegang memori, jadi Bytes tidak bisa diisi dari len(data).
+func mediaFileSize(url string) int {
+	i := strings.Index(url, "/files/")
+	if i < 0 {
+		return 0
+	}
+	rel := strings.TrimPrefix(url[i:], "/files/")
+	rel = strings.TrimPrefix(rel, "/")
+	if rel == "" || strings.Contains(rel, "..") {
+		return 0
+	}
+	root, err := filepath.Abs(mediaDir())
+	if err != nil {
+		return 0
+	}
+	st, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil || st.IsDir() {
+		return 0
+	}
+	return int(st.Size())
+}
+
+// linkKindMime menebak MIME dari jenis link saat sumber byte tidak tersedia
+// (kasus canvas: byte-nya sudah ditulis ke disk oleh artifactLink, bukan dipegang
+// res.Artifacts).
+func linkKindMime(kind string) string {
+	switch kind {
+	case "image":
+		return "image/*"
+	case "video":
+		return "video/mp4"
+	case "audio":
+		return "audio/mpeg"
+	case "canvas":
+		return "text/html"
+	default:
+		return "application/octet-stream"
+	}
+}
 
 // deriveMediaJobArtifacts membangun daftar artefak terstruktur dari konten
 // final markdown + daftar artefak mentah, TANPA menyimpan byte ke disk.
@@ -239,50 +288,73 @@ var mediaLinkRe = regexp.MustCompile(`!\[image\]\(([^)]*)\)|\[(?:video|audio|med
 //
 // Mime dan Bytes selalu diambil dari entri res.Artifacts yang bersangkutan, dan
 // salinan byte mentah tetap disimpan di field data (dipakai GET /v1/media/{id}/content).
-// Kalau konten tidak punya link untuk sebuah artefak (mis. canvas yang mengembalikan
-// HTML inline dan tidak menghasilkan artefak), entri itu tidak dimasukkan.
+//
+// Dua kasus khusus:
+//   - Canvas: byte-nya tidak pernah masuk res.Artifacts (dokumen diambil dari
+//     payload inline lalu ditulis ke disk oleh artifactLink). Jadi entri
+//     disintesis dari link-nya sendiri, Mime text/html. Tanpa ini job canvas
+//     selesai dengan artifacts kosong.
+//   - Kalau konten tidak punya link sama sekali (mis. artefak tanpa link):
+//     jangan mengarang entri.
 func deriveMediaJobArtifacts(content string, src []MediaArtifact) []mediaJobArtifact {
-	if len(src) == 0 {
-		return nil
-	}
 	matches := mediaLinkRe.FindAllStringSubmatch(content, -1)
 	if len(matches) == 0 {
 		return nil
 	}
-	// Ambil target dari tiap match: grup 1 (![...]) atau grup 2 ([...]).
-	targets := make([]string, 0, len(matches))
+	// Ambil target + jenisnya dari tiap match:
+	//   grup 1 = target ![...], grup 2 = jenis [..], grup 3 = target [..]
+	type link struct {
+		kind   string
+		target string
+	}
+	links := make([]link, 0, len(matches))
 	for _, m := range matches {
-		t := m[1]
-		if t == "" {
-			t = m[2]
+		if m[1] != "" {
+			links = append(links, link{kind: "image", target: m[1]})
+			continue
 		}
-		targets = append(targets, t)
+		links = append(links, link{kind: m[2], target: m[3]})
 	}
 
 	// Preamble bisa saja mengandung markdown biasa yang kebetulan cocok. Link
 	// artefak selalu ditambahkan di UJUNG konten oleh appendArtifactMarkdownWithBase,
 	// jadi kalau jumlah link > jumlah artefak, pakai N link TERAKHIR — itu milik
 	// artefak, sisanya bagian preamble.
-	if len(targets) > len(src) {
-		targets = targets[len(targets)-len(src):]
+	if len(src) > 0 && len(links) > len(src) {
+		links = links[len(links)-len(src):]
 	}
-	if len(targets) < len(src) {
-		// Kurang dari yang diharapkan (mis. artefak tanpa link): hanya pasangkan
-		// yang ada, demi keselamatan jangan mengarang entri.
-		src = src[:len(targets)]
+	if len(src) > 0 && len(links) < len(src) {
+		// Kurang dari yang diharapkan: hanya pasangkan yang ada, demi keselamatan
+		// jangan mengarang entri.
+		src = src[:len(links)]
 	}
 
-	arts := make([]mediaJobArtifact, 0, len(targets))
-	for i, target := range targets {
-		a := src[i]
-		ma := mediaJobArtifact{Mime: a.Mime, Bytes: len(a.Data), data: a.Data}
-		if strings.HasPrefix(target, "data:") {
+	arts := make([]mediaJobArtifact, 0, len(links))
+	for i, ln := range links {
+		var ma mediaJobArtifact
+		if len(src) > 0 {
+			a := src[i]
+			ma = mediaJobArtifact{Mime: a.Mime, Bytes: len(a.Data), data: a.Data}
+		} else {
+			// Canvas / artefak tanpa byte di memori: turunkan dari jenis link.
+			ma = mediaJobArtifact{Mime: linkKindMime(ln.kind)}
+		}
+		if strings.HasPrefix(ln.target, "data:") {
 			// data:<mime>;base64,<...> — base64 dimulai setelah koma pertama.
-			if idx := strings.Index(target, ";base64,"); idx >= 0 {
-				ma.Base64 = target[idx+len(";base64,"):]
+			if idx := strings.Index(ln.target, ";base64,"); idx >= 0 {
+				ma.Base64 = ln.target[idx+len(";base64,"):]
+				// Mime bisa dibaca dari data URL kalau sumber kosong.
+				if len(src) == 0 {
+					if mi := strings.Index(ln.target, ":"); mi > 0 {
+						ma.Mime = ln.target[mi+1 : idx]
+					}
+				}
 			}
 		} else {
-			ma.URL = target
+			ma.URL = ln.target
+			if len(src) == 0 {
+				ma.Bytes = mediaFileSize(ln.target)
+			}
 		}
 		arts = append(arts, ma)
 	}

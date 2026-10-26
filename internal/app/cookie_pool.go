@@ -412,6 +412,54 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 	return pickCookieAccountFor(ModelConfig{}, skip)
 }
 
+// modelDenyTTL adalah berapa lama satu pasangan (akun, model) dihindari setelah
+// Google menjawab dengan model lain.
+//
+// Ini BUKAN penilaian "akun mati" — akunnya sehat, hanya tidak berhak atas model
+// itu untuk sementara (paling sering: kuota preview harian habis). Tanpa cooldown,
+// setiap request mengulang perjalanan 10-20 detik ke Google untuk hasil yang sama
+// persis, dan klien hanya melihat 502 yang lambat. 15 menit cukup untuk melewati
+// lonjakan, tapi tetap pendek supaya model yang pulih cepat terpakai lagi.
+const modelDenyTTL = 5 * time.Minute
+
+var (
+	modelDenyMu sync.Mutex
+	modelDeny   = map[string]int64{} // key -> unix expiry
+)
+
+func modelDenyKey(acctID int64, mc ModelConfig) string {
+	return fmt.Sprintf("%d|%s|%d", acctID, mc.HexID, mc.Tool)
+}
+
+// markModelDenied mencatat bahwa akun ini baru saja disajikan model lain.
+func markModelDenied(acctID int64, mc ModelConfig) {
+	if acctID <= 0 || mc.HexID == "" {
+		return
+	}
+	modelDenyMu.Lock()
+	modelDeny[modelDenyKey(acctID, mc)] = time.Now().Add(modelDenyTTL).Unix()
+	modelDenyMu.Unlock()
+}
+
+// modelDenied melaporkan apakah akun ini sedang dihindari untuk model tersebut.
+func modelDenied(acctID int64, mc ModelConfig) bool {
+	if acctID <= 0 || mc.HexID == "" {
+		return false
+	}
+	k := modelDenyKey(acctID, mc)
+	modelDenyMu.Lock()
+	defer modelDenyMu.Unlock()
+	until, ok := modelDeny[k]
+	if !ok {
+		return false
+	}
+	if time.Now().Unix() >= until {
+		delete(modelDeny, k)
+		return false
+	}
+	return true
+}
+
 // pickCookieAccountFor 挑一个**真的能用这个模型**的账号。
 //
 // Ini perbaikan inti untuk masalah "model yang dipanggil beda dengan upstream":
@@ -453,6 +501,13 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 			continue
 		}
 		if mc.HexID != "" && !probeForAccount(a.ID).supportsModel(mc) {
+			continue
+		}
+		// Akun yang baru saja disajikan model lain untuk model ini dilewati
+		// selama cooldown, supaya request berikutnya tidak membayar 10-20 detik
+		// lagi untuk hasil yang sama. Kalau semua akun kena cooldown, fungsi ini
+		// mengembalikan false dan pemanggil memberi error yang jujur.
+		if modelDenied(a.ID, mc) {
 			continue
 		}
 		_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), a.ID)

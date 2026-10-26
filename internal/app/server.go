@@ -146,10 +146,22 @@ func callGemini(ctx context.Context, prompt, latest string, mc ModelConfig, tool
 		if doc == "" {
 			return "", nil, res, fmt.Errorf("canvas generation failed: no HTML document in response (raw %d bytes)", len(res.Raw))
 		}
-		if text != "" && !strings.Contains(doc, text) {
-			return text + "\n\n" + doc, nil, res, nil // preamble + 文档
+		// Simpan dokumen sebagai artifact supaya muncul di galeri seperti gambar/
+		// musik/video, bukan cuma teks yang menguap setelah respons ditutup.
+		// artifactLink memakai ambang ukuran yang sama; dokumen canvas hampir
+		// selalu di atasnya, tapi kalau di bawah pun tetap dikembalikan inline.
+		bURL := ""
+		if len(baseURL) > 0 {
+			bURL = baseURL[0]
 		}
-		return doc, nil, res, nil
+		link := artifactLink(MediaArtifact{
+			Mime: "text/html",
+			Data: []byte(doc),
+		}, bURL)
+		if text != "" && !strings.Contains(doc, text) {
+			return text + "\n\n" + link, nil, res, nil // preamble + 文档
+		}
+		return link, nil, res, nil
 	}
 	// 媒体模型（生图/音乐）：生成 200 了但产物字节没取回来，直接报错而不是返回一个
 	// 只有文字没有图的半成品 —— 客户端要的就是那张图/那段乐。

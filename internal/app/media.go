@@ -71,7 +71,32 @@ func extractCanvasDoc(raw string) string {
 			}
 		}
 	}
-	return best
+	return stripCodeFence(best)
+}
+
+// stripCodeFence membuang pembungkus ```html ... ``` dari dokumen canvas.
+//
+// Google mengirim dokumen canvas sebagai blok kode berpagar di dalam payload.
+// Kalau fence-nya ikut tersimpan, file .html-nya diawali "```html" dan diakhiri
+// "```" — browser lalu merender teks itu sebagai isi halaman, bukan sebagai
+// dokumen. Karena canvas disajikan langsung (iframe / tab baru), isinya harus
+// HTML murni.
+func stripCodeFence(doc string) string {
+	s := strings.TrimSpace(doc)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	// Buang baris pembuka (```html / ``` / ```HTML apa pun).
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	} else {
+		return s
+	}
+	// Buang pagar penutup di akhir, kalau ada.
+	if i := strings.LastIndex(s, "```"); i >= 0 && strings.TrimSpace(s[i+3:]) == "" {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 // downloadOPI 是产物下载 URL（contribution 那条）必带的 opi 参数。取自 /app 页面，

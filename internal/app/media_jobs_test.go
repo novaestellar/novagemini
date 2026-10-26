@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // withSaveMediaToDisk 在测试期间强制开启磁盘落盘,并把内联阈值降到 1 KB,
@@ -139,6 +140,47 @@ func TestDeriveMediaJobArtifactsCanvasNoContent(t *testing.T) {
 	a := MediaArtifact{Mime: "audio/mpeg", Data: bytesRepeat(0x43, 32)}
 	if arts := deriveMediaJobArtifacts("没有链接的正文", []MediaArtifact{a}); arts != nil {
 		t.Errorf("正文无链接时应返回 nil, got %+v", arts)
+	}
+}
+
+// TestDeriveMediaJobArtifactsCanvasFromLink melengkapi kasus di atas: canvas yang
+// BERHASIL punya satu jejak saja — link [canvas](...) di akhir konten, karena
+// dokumennya tidak lewat res.Artifacts. Sebelum ini link canvas tidak dikenali
+// sama sekali, jadi job canvas selalu selesai dengan artifacts kosong dan galeri
+// tidak pernah melihatnya sebagai artefak.
+func TestDeriveMediaJobArtifactsCanvasFromLink(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	withSaveMediaToDisk(t, 1)
+
+	// Siapkan file di media dir supaya ukurannya bisa diisi dari disk.
+	day := time.Now().Format("2006-01-02")
+	dir := filepath.Join(mediaDir(), day)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := []byte("<!doctype html><html><body>halo</body></html>")
+	if err := os.WriteFile(filepath.Join(dir, "abc.html"), body, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	content := "Sedikit penjelasan dari model.\n\n[canvas](/files/" + day + "/abc.html)"
+	arts := deriveMediaJobArtifacts(content, nil)
+	if len(arts) != 1 {
+		t.Fatalf("canvas harus menghasilkan 1 artefak, got %d: %+v", len(arts), arts)
+	}
+	a := arts[0]
+	if a.Mime != "text/html" {
+		t.Errorf("Mime=%q want text/html", a.Mime)
+	}
+	if !strings.Contains(a.URL, "/files/") || a.Base64 != "" {
+		t.Errorf("URL=%q Base64.len=%d, want URL ke /files/ dan Base64 kosong", a.URL, len(a.Base64))
+	}
+	if a.Bytes != len(body) {
+		t.Errorf("Bytes=%d want %d (dibaca dari disk)", a.Bytes, len(body))
+	}
+	if len(a.data) != 0 {
+		t.Errorf("artefak hasil sintesis tidak boleh membawa byte di memori, got %d", len(a.data))
 	}
 }
 

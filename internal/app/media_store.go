@@ -57,6 +57,11 @@ func artifactExt(mime string) string {
 		return ".mp4"
 	case strings.Contains(m, "webm"):
 		return ".webm"
+	// Canvas mengembalikan dokumen HTML utuh. Tanpa cabang ini ia jatuh ke ".bin"
+	// sehingga panel menyajikannya sebagai unduhan octet-stream, bukan halaman
+	// yang bisa dibuka — canvas jadi tidak pernah muncul sebagai artifact.
+	case strings.Contains(m, "text/html"):
+		return ".html"
 	default:
 		return ".bin"
 	}
@@ -95,16 +100,29 @@ func mediaInlineLimitBytes() int {
 // URL kalau besar. Kalau simpan gagal, jatuh ke base64 supaya hasil tidak hilang.
 func artifactLink(a MediaArtifact, baseURL string) string {
 	isImage := strings.HasPrefix(a.Mime, "image/")
+	isCanvas := strings.HasPrefix(a.Mime, "text/html")
 	inline := func() string {
 		dataURL := "data:" + a.Mime + ";base64," + base64.StdEncoding.EncodeToString(a.Data)
-		if isImage {
+		switch {
+		case isImage:
 			return "![image](" + dataURL + ")"
+		case isCanvas:
+			return "[canvas](" + dataURL + ")"
+		default:
+			return "[media](" + dataURL + ")"
 		}
-		return "[media](" + dataURL + ")"
 	}
 
 	if !rtCfg().SaveMediaToDisk || len(a.Data) < mediaInlineLimitBytes() {
-		return inline()
+		// Canvas selalu ditulis ke disk kalau fitur itu menyala, walau ukurannya
+		// di bawah ambang inline. Dua alasan:
+		//   1. Chrome memblokir navigasi/iframe ke data: URL, jadi data URL
+		//      tidak bisa dipakai membuka dokumen canvas sama sekali.
+		//   2. Galeri hanya memuat apa yang ada di data/media. Canvas inline
+		//      tidak pernah muncul di sana.
+		if !(isCanvas && rtCfg().SaveMediaToDisk) {
+			return inline()
+		}
 	}
 
 	rel, err := saveArtifact(a.Data, a.Mime)
@@ -120,6 +138,9 @@ func artifactLink(a MediaArtifact, baseURL string) string {
 		return fmt.Sprintf("[video](%s)", u)
 	case strings.HasPrefix(a.Mime, "audio/"):
 		return fmt.Sprintf("[audio](%s)", u)
+	case isCanvas:
+		// Canvas: dokumen HTML yang bisa dibuka langsung di browser.
+		return fmt.Sprintf("[canvas](%s)", u)
 	default:
 		return fmt.Sprintf("[media](%s)", u)
 	}

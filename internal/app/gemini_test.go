@@ -309,9 +309,12 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 // modelNeedsLogin 是「没 cookie 时排除哪些模型」和「#20 匿名优先要不要占号」
 // 共用的单一判据，逐个模型钉死：纯文本非思考的 3.6/3.5-lite 匿名可用，其余全需登录。
 func TestModelNeedsLogin(t *testing.T) {
-	// 4 Argon terbukti JALAN di jalur anonim (uji langsung: anonim -> "4 Argon"
-	// dengan jawaban lengkap; dengan cookie -> "4 Argon" tapi isinya error).
-	// Jadi Argon bukan model "butuh login" — dia justru model "lebih baik anonim".
+	// Argon TIDAK termasuk "butuh login" dalam arti modelNeedsLogin: tanpa cookie
+	// pun dia masih menjawab sebagai Argon (anonim), jadi tetap boleh ditawarkan
+	// saat pool kosong. Yang berubah adalah PRIORITAS-nya — lihat argonNeedsCookie:
+	// begitu ada akun, Argon wajib lewat cookie. Dua hal berbeda:
+	//   modelNeedsLogin   = "tanpa login sama sekali tidak berfungsi" (gate daftar model)
+	//   argonNeedsCookie  = "kalau ada akun, jangan pakai anonim" (gate pemilihan jalur)
 	anon := map[string]bool{
 		"gemini-3.6-flash":      true,
 		"gemini-3.5-flash-lite": true,
@@ -334,30 +337,32 @@ func TestModelNeedsLogin(t *testing.T) {
 	}
 }
 
-// Argon harus tetap diarahkan ke jalur anonim walau cookie pool berisi akun.
-// Kalau ikut jalur cookie, Google membalas 200 dengan "4 Argon" tapi isinya
-// pesan error — kegagalan yang menipu karena nama modelnya benar.
-func TestPreferAnonModel(t *testing.T) {
+// Argon 必须优先走 cookie 路径：匿名既发不了大 prompt（无法上传附件），
+// 也没有配额/rollout 保证。Aturan lama (preferAnonModel) membalik ini dan
+// justru jadi penyebab 502 pada sesi besar.
+func TestArgonNeedsCookie(t *testing.T) {
 	for name, mc := range Models {
 		want := mc.HexID == hexArgon4 && mc.Tool == 0
-		if got := preferAnonModel(mc); got != want {
-			t.Errorf("%s: preferAnonModel=%v want %v", name, got, want)
+		if got := argonNeedsCookie(mc); got != want {
+			t.Errorf("%s: argonNeedsCookie=%v want %v", name, got, want)
 		}
 	}
-	// preferAnonModel harus menang atas setelan anon_first yang mati.
-	// Setel langsung ke rtVal: saveRuntimeConfig butuh RuntimeConfig lengkap yang
-	// valid, sedangkan di test ini kita hanya peduli satu field.
+	// argonNeedsCookie harus menang atas setelan anon_first yang hidup: Argon
+	// tidak boleh jatuh ke anonim hanya karena anon_first=on.
 	rtMu.Lock()
 	prev := rtVal.AnonFirst
-	rtVal.AnonFirst = false
+	rtVal.AnonFirst = true
 	rtMu.Unlock()
 	defer func() {
 		rtMu.Lock()
 		rtVal.AnonFirst = prev
 		rtMu.Unlock()
 	}()
-	if !anonFirstEligible(Models["gemini-4-argon"], false, 0) {
-		t.Error("Argon 应始终走匿名，即使 anon_first 关闭")
+	if anonFirstEligible(Models["gemini-4-argon"], false, 0) {
+		t.Error("Argon tidak boleh lewat jalur anonim, meski anon_first menyala")
+	}
+	if !anonFirstEligible(Models["gemini-3.6-flash"], false, 0) {
+		t.Error("3.6 Flash 在 anon_first 开着时应走匿名")
 	}
 	if anonFirstEligible(Models["gemini-3.1-pro"], false, 0) {
 		t.Error("3.1 Pro 不该走匿名")
@@ -474,20 +479,28 @@ func TestAnonFirstEligible_PromptTooBigForcesCookie(t *testing.T) {
 		rtMu.Unlock()
 	}()
 
-	// Argon 平时prefer anon，但超长时必须让位给 cookie —— 否则永远 502。
-	argon := Models["gemini-4-argon"]
-	if !anonFirstEligible(argon, false, 1000) {
-		t.Error("prompt 正常时 Argon 仍应走匿名")
+	// Argon sekarang SELALU lewat cookie (argonNeedsCookie), jadi ukuran prompt
+	// bukan lagi penentu untuknya. Yang perlu dijaga di sini adalah model yang
+	// memang boleh anonim: prompt kecil -> anon, prompt besar -> cookie.
+	plain := Models["gemini-3.6-flash"]
+	if !anonFirstEligible(plain, false, 1000) {
+		t.Error("prompt 正常时纯文本模型应走匿名")
 	}
-	if anonFirstEligible(argon, false, 200000) {
-		t.Error("prompt 超 128 KB 时 Argon 必须改走 cookie，否则无法转附件")
+	if anonFirstEligible(plain, false, 200000) {
+		t.Error("prompt 超 128 KB 时必须改走 cookie，否则无法转附件")
 	}
 	// 边界：正好等于预算不算超。
-	if !anonFirstEligible(argon, false, 128000) {
+	if !anonFirstEligible(plain, false, 128000) {
 		t.Error("正好等于预算时仍可走匿名")
 	}
-	if anonFirstEligible(argon, false, 128001) {
+	if anonFirstEligible(plain, false, 128001) {
 		t.Error("超出预算 1 字节也必须转 cookie")
+	}
+
+	// Argon 任何尺寸都不走匿名。
+	argon := Models["gemini-4-argon"]
+	if anonFirstEligible(argon, false, 1000) || anonFirstEligible(argon, false, 200000) {
+		t.Error("Argon 应始终走 cookie，与 prompt 大小无关")
 	}
 }
 

@@ -439,9 +439,15 @@ func parseToolChoice(tc interface{}) (string, string) {
 type PromptTooLongError struct {
 	Bytes, Budget int
 	HasCookie     bool // 有 cookie 却还超，说明附件那条路也没救回来
+	// Detail 是调用方给的完整解释。非空时直接替换默认文案 —— 有些情况默认
+	// 文案会误导（例如"加一个 cookie"），实际要加的是"支持这个模型的账号"。
+	Detail string
 }
 
 func (e *PromptTooLongError) Error() string {
+	if e.Detail != "" {
+		return e.Detail
+	}
 	base := fmt.Sprintf(
 		"prompt is %d bytes, over the %d-byte per-request limit of the Gemini web "+
 			"protocol (the limit is on UTF-8 bytes, not tokens). The upstream silently "+

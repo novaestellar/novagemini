@@ -143,25 +143,34 @@ func modelNeedsLogin(mc ModelConfig) bool {
 		mc.Thinking || mc.Tool > 0
 }
 
-// preferAnonModel menandai model yang di server ini LEBIH BAIK jalan lewat jalur
-// anonim. Terbukti dari uji langsung ke akun berbayar (nova-ff2):
-//   4 Argon + cookie   -> 200, served "4 Argon", isi: "Sorry, something went wrong"
-//   4 Argon tanpa cookie -> 200, served "4 Argon", isi: jawaban lengkap
+// argonNeedsCookie menandai model yang WAJIB lewat jalur cookie kalau pool berisi
+// akun — kebalikan dari aturan lama `preferAnonModel`.
 //
-// PENTING: ini preferensi, bukan larangan. Kalau prompt melebihi batas protokol
-// 128 KB, jalur anonim mustahil dipakai (prepareContextFile butuh cookie untuk
-// mengunggah prompt sebagai lampiran teks), jadi anonFirstEligible menimpanya.
-func preferAnonModel(mc ModelConfig) bool {
+// Aturan lama salah karena cuma menguji satu kasus (nova-ff2, prompt kecil) lalu
+// digeneralisasi: "Argon + cookie -> isinya error, jadi Argon selalu anonim".
+// Kenyataannya jalur anonim punya dua cacat yang jauh lebih mahal:
+//   - anonim tidak bisa mengunggah, jadi prompt > 128 KB mustahil dikirim
+//     (prepareContextFile menyerah saat cookie kosong) -> 502 pasti;
+//   - anonim tidak punya kuota/rollout akun, jadi tidak ada yang menjamin
+//     model yang menjawab benar-benar Argon.
+// Jadi Argon diperlakukan seperti model berbayar lain: pakai cookie.
+//
+// Ini bukan larangan mutlak: kalau pool kosong (atau semua akun gagal),
+// pickCookieAccountFor mengembalikan nil dan permintaan tetap jatuh ke anonim —
+// Argon anonim masih lebih berguna daripada tidak bisa dipakai sama sekali.
+func argonNeedsCookie(mc ModelConfig) bool {
 	return mc.HexID == hexArgon4 && mc.Tool == 0
 }
 
 // anonFirstEligible 判断「匿名优先」开关下这次请求能不能走匿名（不占 cookie 账号）：
 // 开关开着 + 没带附件 + 模型不需要登录态 + prompt 没超协议上限。
 //
-// 两个例外会强制走 cookie：
+// 三个例外会强制走 cookie：
 //   - 附件（图/视频）：在对话里引用必须登录，匿名会被上游回 1100。
 //   - prompt 超过 MaxPromptBytes：匿名没法上传，prepareContextFile 直接放弃
 //     转换，请求必然 502。这是会话被撑大后整段对话死掉的直接原因。
+//   - Argon（argonNeedsCookie）：它需要付费号的 rollout 与配额，匿名既发不了
+//     大 prompt，也没有任何机制保证真拿到 Argon。
 //
 // 开关关着永远返回 false（保持旧行为：池里有号就用号）。
 func anonFirstEligible(mc ModelConfig, hasAttachment bool, promptBytes int) bool {
@@ -173,8 +182,10 @@ func anonFirstEligible(mc ModelConfig, hasAttachment bool, promptBytes int) bool
 	if budget := rtCfg().MaxPromptBytes; budget > 0 && promptBytes > budget {
 		return false
 	}
-	if preferAnonModel(mc) {
-		return true
+	// Argon 一律先挑号。池子空的时候下面 pickCookieAccountFor 返回 nil，
+	// 请求自然回落匿名，所以这里不需要额外判断 hasCookie()。
+	if argonNeedsCookie(mc) {
+		return false
 	}
 	return rtCfg().AnonFirst && !modelNeedsLogin(mc)
 }
@@ -401,6 +412,34 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 	if !anonFirstEligible(mc, len(pending) > 0, len(prompt)) {
 		if a, ok := pickCookieAccountFor(mc, nil); ok {
 			acct = a
+		}
+	}
+	// WAJIB cookie untuk prompt kebesaran — bukan preferensi.
+	//
+	// prepareContextFile hanya bisa mengubah prompt > batas menjadi lampiran teks
+	// kalau ada cookie; jalur anonim pasti ditolak (file yang diunggah tak bisa
+	// dirujuk). Jadi kalau di sini acct masih nil, jangan diam-diam lanjut ke
+	// anonim dan menunggu 502 dari Google: berhenti dengan pesan yang menyebut
+	// sebab sebenarnya, supaya yang perlu ditambahkan jelas.
+	if acct == nil {
+		if budget := rtCfg().MaxPromptBytes; budget > 0 && len(prompt) > budget {
+			_, enabled := accountCount()
+			var why string
+			if enabled > 0 {
+				why = fmt.Sprintf("all %d enabled account(s) were just turned down by "+
+					"Google for %s (they are on a %s cooldown after serving a different "+
+					"model, which usually means that model's daily quota is exhausted)",
+					enabled, modelLabel(mc), modelDenyTTL)
+			} else {
+				why = fmt.Sprintf("no enabled account supports %s", modelLabel(mc))
+			}
+			msg := fmt.Sprintf("prompt is %d bytes and the anonymous path cannot upload "+
+				"attachments, so it can only be sent through a signed-in account; %s. "+
+				"Add or re-enable an account in the admin panel (Cookie pool), wait for "+
+				"the quota to reset, or shorten the prompt", len(prompt), why)
+			return &StreamResult{}, &PromptTooLongError{
+				Bytes: len(prompt), Budget: budget, HasCookie: false, Detail: msg,
+			}
 		}
 	}
 	preferProxy := int64(0)
@@ -841,6 +880,9 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 			// Akun ini sehat, hanya tidak berhak atas model tersebut. Jangan
 			// tandai sebagai gagal (bukan salah cookie), cukup pindah akun.
 			markCookieByStatus(cookieID, 200, "")
+			// Catat supaya permintaan berikutnya tidak mengulang perjalanan
+			// 10-20 detik ke akun yang sama untuk hasil yang sama.
+			markModelDenied(cookieID, mc)
 			if switched := switchToAccountSupporting(mc, tried, &acct, &cookieStr,
 				&cookieID, &cookieLabel, &sapisid, &xsrfToken); switched {
 				logf("[model] %s ditolak akun #%d (disajikan %q), pindah akun",
@@ -1192,7 +1234,13 @@ func buildModelHeader(hexID string, mode, think, thinkLevel int, uuid string) st
 	// gagal — jebakan yang sempat menipu: served benar, isi rusak.
 	// Jadi ThinkLevel hanya diterjemahkan ke think (1=plain, 2=high), bukan
 	// ke bentuk header yang berbeda.
-	if hexID == hexArgon4 && thinkLevel >= thinkLevelHigh {
+	// Perhatikan: yang menentukan extended thinking hanya tingkat High.
+	// Perbandingan lama `thinkLevel >= thinkLevelHigh` salah karena angka level
+	// BUKAN urutan naik: low=1, high=2, medium=4. Akibatnya medium (4) ikut
+	// dianggap >= high (2), dikirim sebagai extended thinking, dan Google
+	// menjawab 3.5 Flash-Lite -> deteksi downgrade -> 502. Jadi bandingkan
+	// dengan nilai persisnya, bukan dengan relasi "lebih besar".
+	if hexID == hexArgon4 && thinkLevel == thinkLevelHigh {
 		think = thinkingExtended
 	}
 	if uuid == "" {

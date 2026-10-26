@@ -448,8 +448,12 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 		//
 		// 挑号要在 prompt 算完之后：prompt 超 128 KB 时匿名没法把它转成附件，
 		// 只有 cookie 能救，所以长度是决定要不要占号的一个输入。
+		//
+		// 用 pickCookieAccountFor 而不是 pickCookieAccount：后者纯轮转，会让
+		// `gemini-4-argon` 落到没有 Argon4p0 rollout 的免费号上，上游回 200 但
+		// 模型是 3.5 Flash-Lite。多轮路径同样要按模型筛号。
 		if !anonFirstEligible(mc, false, len(prompt)) {
-			if a, ok := pickCookieAccount(); ok {
+			if a, ok := pickCookieAccountFor(mc, nil); ok {
 				conv.cookie = a.Cookie
 				conv.sapisid = extractSAPISID(a.Cookie)
 				conv.isLogin = true

@@ -418,6 +418,13 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
              font-size: 12.5px; font-weight: 500; color: var(--text-2);
              font-variant-numeric: tabular-nums; }
   .gal-day:first-child { margin-top: 0; }
+  /* 类别抬头:比日期更重的层级,但同样不画框,靠字号和颜色分层。 */
+  .gal-sec { margin-top: 28px; }
+  .gal-sec:first-child { margin-top: 0; }
+  .gal-kind { display: flex; align-items: baseline; gap: 10px;
+              margin: 0 0 4px; font-size: 15px; font-weight: 600;
+              color: var(--text-1); }
+  .gal-kind .muted { font-weight: 400; font-size: 12.5px; }
   .gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
               gap: 14px; }
   .gal-card { background: var(--card); border-radius: var(--r-card); overflow: hidden;
@@ -432,6 +439,10 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
   /* 音频没有画面,给它一条自己的高度,别撑成 4:3 的空盒子 */
   .gal-thumb.audio { aspect-ratio: auto; padding: 24px 14px; }
   .gal-thumb audio { width: 100%; }
+  /* 画布是整页 HTML,用 iframe 预览。白底,避免透明页面在深色卡上不可读。 */
+  .gal-thumb.canvas { padding: 0; background: #fff; }
+  .gal-thumb iframe { width: 100%; height: 100%; border: 0; display: block;
+                      background: #fff; }
   .gal-dl { color: var(--nav-on-fg); font-size: 12.5px; text-decoration: none; }
   .gal-dl:hover { text-decoration: underline; }
   .gal-meta { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 3px;
@@ -955,33 +966,79 @@ function galCard(it) {
   } else if (mime.indexOf('audio/') === 0) {
     thumbCls += ' audio';             // 音频没有画面,别撑成 4:3 的空盒子
     media = `<audio controls preload="none" src="${url}"></audio>`;
+  } else if (mime.indexOf('text/html') === 0) {
+    // Canvas 是整页 HTML,放进 iframe 直接预览。sandbox 不给 allow-same-origin:
+    // 产物是模型生成的,让它跑在独立源里,拿不到面板的 cookie 和 DOM。
+    thumbCls += ' canvas';
+    media = `<iframe loading="lazy" sandbox="allow-scripts" src="${url}" title="${name}"></iframe>`;
   } else {
-    media = `<a class="gal-dl" href="${url}" download>下载</a>`;
+    media = `<a class="gal-dl" href="${url}" download>${LANG === 'en' ? 'Download' : '下载'}</a>`;
   }
+  // Canvas 用链接打开原始页面,比下载更有意义(HTML 下载下来也只是个文件)。
+  const open = mime.indexOf('text/html') === 0
+    ? `<a class="gal-dl" href="${url}" target="_blank" rel="noopener">${LANG === 'en' ? 'Open' : '打开'}</a>`
+    : '';
   return `
     <div class="gal-card">
       <div class="${thumbCls}">${media}</div>
       <div class="gal-meta">
         <span class="gal-name" title="${escapeHtml(it.path || it.name || '')}">${name}</span>
-        <span class="gal-sub"><span>${fmtBytes(it.bytes)}</span><span>${fmt.ts(it.mtime)}</span></span>
+        <span class="gal-sub"><span>${fmtBytes(it.bytes)}</span><span>${fmt.ts(it.mtime)}</span>${open}</span>
       </div>
     </div>`;
 }
 
-// 列表已经是 mtime 倒序,按出现顺序收拢成天即可,不再排一次。
+// 按 MIME 归成用户看得懂的类别。顺序即展示顺序:先图,再视频、音频、画布,
+// 最后才是认不出的二进制 —— 画廊的主要用途是找"我刚生成的那张图/那段视频"。
+const GAL_KINDS = [
+  { id: 'image',  test: m => m.indexOf('image/') === 0,
+    zh: '图片', en: 'Images' },
+  { id: 'video',  test: m => m.indexOf('video/') === 0,
+    zh: '视频', en: 'Videos' },
+  { id: 'audio',  test: m => m.indexOf('audio/') === 0,
+    zh: '音乐', en: 'Music' },
+  { id: 'canvas', test: m => m.indexOf('text/html') === 0,
+    zh: '画布', en: 'Canvas' },
+  { id: 'other',  test: () => true,
+    zh: '其它', en: 'Other' },
+];
+
+function galKindOf(it) {
+  const m = String(it.mime || '');
+  for (const k of GAL_KINDS) if (k.test(m)) return k;
+  return GAL_KINDS[GAL_KINDS.length - 1];
+}
+
+// 先按类别分组,类别内再按天分组。两级抬头:类别是主标题(带图标和计数),
+// 日期是次标题 —— 类别少而稳定,日期多且会一直增长,主次不能反过来。
 function galleryBody(items) {
   if (!items.length) {
-    return '<div class="empty">还没有产物。生成图片 / 音乐 / 视频后会出现在这里。</div>';
+    return `<div class="empty">${LANG === 'en'
+      ? 'No artifacts yet. Generate an image / music / video / canvas and it will show up here.'
+      : '还没有产物。生成图片 / 音乐 / 视频 / 画布后会出现在这里。'}</div>`;
   }
-  const order = [], byDay = new Map();
+  const groups = new Map();  // kind.id -> { kind, days: Map<day, items[]> }
   for (const it of items) {
+    const kind = galKindOf(it);
+    if (!groups.has(kind.id)) groups.set(kind.id, { kind, days: new Map() });
+    const g = groups.get(kind.id);
     const d = galDay(it);
-    if (!byDay.has(d)) { byDay.set(d, []); order.push(d); }
-    byDay.get(d).push(it);
+    if (!g.days.has(d)) g.days.set(d, []);
+    g.days.get(d).push(it);
   }
-  return order.map(d => `
-    <div class="gal-day">${d}<span class="muted">${galCount(byDay.get(d).length)}</span></div>
-    <div class="gal-grid">${byDay.get(d).map(galCard).join('')}</div>`).join('');
+  return GAL_KINDS.filter(k => groups.has(k.id)).map(k => {
+    const g = groups.get(k.id);
+    const total = [...g.days.values()].reduce((n, arr) => n + arr.length, 0);
+    const label = LANG === 'en' ? k.en : k.zh;
+    const inner = [...g.days.entries()].map(([d, arr]) => `
+      <div class="gal-day">${d}<span class="muted">${galCount(arr.length)}</span></div>
+      <div class="gal-grid">${arr.map(galCard).join('')}</div>`).join('');
+    return `
+      <section class="gal-sec" data-kind="${k.id}">
+        <h3 class="gal-kind">${label}<span class="muted">${galCount(total)}</span></h3>
+        ${inner}
+      </section>`;
+  }).join('');
 }
 
 // 手动刷新和自动刷新都走这里,只换 #galRoot,不整页重渲染。
