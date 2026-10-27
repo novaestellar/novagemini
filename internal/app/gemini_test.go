@@ -527,6 +527,38 @@ func TestClassifyError(t *testing.T) {
 }
 
 // mustPrompt 是测试里的便捷包装：messagesToPrompt 现在会在 prompt 超长时返回错误。
+// Kebijakan routing model berbayar (permintaan operator):
+//   - Argon non-thinking BOLEH jatuh ke anonim sebagai cadangan (anonim
+//     benar-benar menyajikan "4 Argon").
+//   - Argon-thinking, 3.1 Pro, 3.8, Thinking lain, dan semua media WAJIB akun:
+//     anonim melayani 3.5 Flash-Lite dengan konteks lebih kecil.
+func TestModelRequiresCookiePolicy(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"gemini-4-argon", false},
+		{"gemini-4-argon-low", false},
+		{"gemini-4-argon-medium", false},
+		{"gemini-4-argon-high", false},
+		{"gemini-4-argon-thinking", true},
+		{"gemini-3.1-pro", true},
+		{"gemini-3.1-pro-thinking", true},
+		{"gemini-3.8-flash", true},
+		{"gemini-3.8-flash-thinking", true},
+		{"gemini-3.6-flash", false},
+		{"gemini-music", true},
+		{"gemini-image", true},
+		{"gemini-canvas", true},
+	}
+	for _, c := range cases {
+		mc := Models[c.name]
+		if got := modelRequiresCookie(mc); got != c.want {
+			t.Errorf("%s: modelRequiresCookie=%v want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func mustPrompt(t *testing.T, msgs []map[string]interface{}, tools []map[string]interface{},
 	toolChoice interface{}) string {
 	t.Helper()

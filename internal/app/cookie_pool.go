@@ -491,6 +491,15 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 		return nil, false
 	}
 	defer rows.Close()
+	// Dua tingkat pilihan: akun BERBAYAR dulu (kalau mendukung model ini), baru
+	// akun free. Di dalam satu tingkat tetap urut round-robin dari SQL di atas.
+	//
+	// Kenapa berbayar dulu (permintaan operator, dan masuk akal buat kuota):
+	// akun pro punya rollout dan jatah model besar; akun free kadang bisa
+	// melayani model yang sama (3.1 Pro di acc1 terbukti 200) tapi ini cadangan,
+	// bukan sasaran utama. Akun yang belum pernah diprobe dianggap non-pro
+	// (cadangan), jadi akun pro yang sudah terdeteksi selalu menang.
+	var proChoice, fallbackChoice *CookieAccount
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
@@ -505,27 +514,40 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 		}
 		// Akun yang baru saja disajikan model lain untuk model ini dilewati
 		// selama cooldown, supaya request berikutnya tidak membayar 10-20 detik
-		// lagi untuk hasil yang sama. Kalau semua akun kena cooldown, fungsi ini
-		// mengembalikan false dan pemanggil memberi error yang jujur.
+		// lagi untuk hasil yang sama.
 		if modelDenied(a.ID, mc) {
 			continue
 		}
-		_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), a.ID)
-		return &a, true
+		c := a
+		if probeForAccount(a.ID).Tier == "pro" {
+			if proChoice == nil {
+				proChoice = &c
+			}
+		} else if fallbackChoice == nil {
+			fallbackChoice = &c
+		}
 	}
-	// Tidak ada akun yang mendukung model ini: kembalikan false.
-	//
-	// Dulu di sini ada jalur "upaya terakhir" yang mengembalikan akun pertama yang
-	// tersaring. Itu justru lebih buruk daripada tidak memilih sama sekali: akun
-	// free tanpa rollout `Argon4p0` selalu menjawab 200 dengan model lain, dan
-	// deteksi downgrade di pemanggil lalu mengubahnya jadi 502 pasti. Pengalaman
-	// nyata: setiap `gemini-4-argon` + cookie mendarat di akun free dan gagal,
-	// sementara jalur anonim untuk model yang sama sukses. Lebih baik serahkan ke
-	// pemanggil supaya jatuh ke anonim / memberi error yang jujur.
-	if mc.HexID != "" {
-		logf("[cookie] tidak ada akun yang mendukung model %s; menyerahkan ke jalur anonim", modelLabel(mc))
+	chosen := proChoice
+	if chosen == nil {
+		chosen = fallbackChoice
 	}
-	return nil, false
+	if chosen == nil {
+		// Tidak ada akun yang mendukung model ini: kembalikan false.
+		//
+		// Dulu di sini ada jalur "upaya terakhir" yang mengembalikan akun pertama yang
+		// tersaring. Itu justru lebih buruk daripada tidak memilih sama sekali: akun
+		// free tanpa rollout `Argon4p0` selalu menjawab 200 dengan model lain, dan
+		// deteksi downgrade di pemanggil lalu mengubahnya jadi 502 pasti. Pengalaman
+		// nyata: setiap `gemini-4-argon` + cookie mendarat di akun free dan gagal,
+		// sementara jalur anonim untuk model yang sama sukses. Lebih baik serahkan ke
+		// pemanggil supaya jatuh ke anonim / memberi error yang jujur.
+		if mc.HexID != "" {
+			logf("[cookie] tidak ada akun yang mendukung model %s; menyerahkan ke jalur anonim", modelLabel(mc))
+		}
+		return nil, false
+	}
+	_, _ = getDB().Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().Unix(), chosen.ID)
+	return chosen, true
 }
 
 // markCookieByStatus 按上游返回回写 cookie 健康度。

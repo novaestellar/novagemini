@@ -162,19 +162,21 @@ func argonNeedsCookie(mc ModelConfig) bool {
 	return mc.HexID == hexArgon4 && mc.Tool == 0
 }
 
-// modelRequiresCookie menjawab: model ini HARUS jawab lewat akun berbayar, dan
-// jatuh ke anonim bukan "tetap jalan" melainkan jawaban salah.
+// modelRequiresCookie menjawab: model ini TIDAK BOLEH dijawab lewat anonim,
+// karena jalur anonim bukan "tetap jalan" melainkan jawaban salah.
 //
-// Dua kelompok:
-//   - Argon (argonNeedsCookie): butuh rollout + kuota akun berbayar.
-//   - 3.8 / 3.1 Pro / semua model Thinking / semua media (modelNeedsLogin):
-//     anonim tidak ditolak, tapi dilayani sebagai 3.5 Flash-Lite dengan konteks
-//     jauh lebih kecil. Klien tidak bisa membedakan itu dari jawaban benar.
+// Kelompok ini adalah model yang dibuka dari 3.1 Pro / 3.8 Flash / Thinking /
+// media (modelNeedsLogin): anonim tidak menolak, tapi melayani 3.5 Flash-Lite
+// dengan konteks jauh lebih kecil. Klien tidak bisa membedakan itu dari jawaban
+// benar, jadi lebih baik gagal dengan sebab yang jelas.
 //
-// Konsekuensinya disengaja: kalau pool kosong atau semua akun tidak berhak,
-// model ini GAGAL dengan pesan jelas alih-alih turun kelas diam-diam.
+// Argon sengaja TIDAK ada di sini: Argon TIDAK bisa dibuka oleh 3.5 Flash-Lite
+// (mode 8 memilih Argon di header), dan uji langsung membuktikan jalur anonim
+// benar-benar menyajikan "4 Argon" — jadi Argon BOLEH jatuh ke anonim sebagai
+// cadangan bila semua akun berbayar sedang tidak berhak (kuota habis). Primary
+// tetap akun pro (argonNeedsCookie memaksa pick dulu); anonim hanya fallback.
 func modelRequiresCookie(mc ModelConfig) bool {
-	return argonNeedsCookie(mc) || modelNeedsLogin(mc)
+	return modelNeedsLogin(mc)
 }
 
 // anonFirstEligible 判断「匿名优先」开关下这次请求能不能走匿名（不占 cookie 账号）：
