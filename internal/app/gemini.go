@@ -162,6 +162,21 @@ func argonNeedsCookie(mc ModelConfig) bool {
 	return mc.HexID == hexArgon4 && mc.Tool == 0
 }
 
+// modelRequiresCookie menjawab: model ini HARUS jawab lewat akun berbayar, dan
+// jatuh ke anonim bukan "tetap jalan" melainkan jawaban salah.
+//
+// Dua kelompok:
+//   - Argon (argonNeedsCookie): butuh rollout + kuota akun berbayar.
+//   - 3.8 / 3.1 Pro / semua model Thinking / semua media (modelNeedsLogin):
+//     anonim tidak ditolak, tapi dilayani sebagai 3.5 Flash-Lite dengan konteks
+//     jauh lebih kecil. Klien tidak bisa membedakan itu dari jawaban benar.
+//
+// Konsekuensinya disengaja: kalau pool kosong atau semua akun tidak berhak,
+// model ini GAGAL dengan pesan jelas alih-alih turun kelas diam-diam.
+func modelRequiresCookie(mc ModelConfig) bool {
+	return argonNeedsCookie(mc) || modelNeedsLogin(mc)
+}
+
 // anonFirstEligible 判断「匿名优先」开关下这次请求能不能走匿名（不占 cookie 账号）：
 // 开关开着 + 没带附件 + 模型不需要登录态 + prompt 没超协议上限。
 //
@@ -420,9 +435,11 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 	// kalau ada cookie; jalur anonim pasti ditolak (file yang diunggah tak bisa
 	// dirujuk). Jadi kalau di sini acct masih nil, jangan diam-diam lanjut ke
 	// anonim dan menunggu 502 dari Google: berhenti dengan pesan yang menyebut
-	// sebab sebenarnya, supaya yang perlu ditambahkan jelas.
+	// sebab sebenarnya.
 	if acct == nil {
-		if budget := rtCfg().MaxPromptBytes; budget > 0 && len(prompt) > budget {
+		budget := rtCfg().MaxPromptBytes
+		oversized := budget > 0 && len(prompt) > budget
+		if oversized {
 			_, enabled := accountCount()
 			var why string
 			if enabled > 0 {
@@ -441,6 +458,29 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 				Bytes: len(prompt), Budget: budget, HasCookie: false, Detail: msg,
 			}
 		}
+	}
+	// Model yang di jalur anonim PASTI turun kelas — modelnya diganti, dan
+	// konteksnya ikut mengecil — tidak boleh dijawab lewat anonim.
+	//
+	// Ini permintaan operator dan juga logika yang benar: jawaban dari model lain
+	// dengan konteks lebih kecil bukan "tetap jalan", itu jawaban salah yang tidak
+	// bisa dideteksi klien. Lebih baik gagal dengan sebab yang jelas.
+	if acct == nil && modelRequiresCookie(mc) {
+		_, enabled := accountCount()
+		var why string
+		switch {
+		case enabled == 0:
+			why = "there is no enabled account in the pool"
+		default:
+			why = fmt.Sprintf("all %d enabled account(s) are unavailable for it "+
+				"(cooling down after Google served a different model, or filtered out "+
+				"because they lack the required rollout)", enabled)
+		}
+		return &StreamResult{}, fmt.Errorf("model %s needs a signed-in PAID account: "+
+			"the anonymous path silently replaces it with 3.5 Flash-Lite and a much "+
+			"smaller context, so it is refused instead of answered with the wrong "+
+			"model; %s. Add or re-enable an account in the admin panel (Cookie pool).",
+			modelLabel(mc), why)
 	}
 	preferProxy := int64(0)
 	if acct != nil {
@@ -896,10 +936,18 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 				// ke akun yang sama adalah pemicu utama sesi di-revoke.
 				break
 			}
-			if attempt < maxAttempts-1 {
-				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
-			}
-			continue
+			// Tidak ada akun lain yang bisa melayani model ini. Berhenti di sini.
+			//
+			// Mengulang akun yang sama tidak akan berubah hasilnya: penolakan
+			// model itu keputusan akses Google untuk (akun, model) tersebut, bukan
+			// gangguan sesaat. Terukur: percobaan Argon 150 KB pernah berjalan
+			// 673 detik hanya untuk berakhir dengan penolakan yang sama, karena
+			// loop mengulang akun yang sudah ditandai. Dengan berhenti di sini
+			// klien menerima sebabnya dalam hitungan detik, dan cooldown 5 menit
+			// menjaga request berikutnya juga tidak mengulanginya.
+			logf("[model] %s: tidak ada akun lain yang berhak, berhenti (disajikan %q)",
+				modelLabel(mc), served)
+			return attrib(lastErr)
 		}
 		// Jawaban yang isinya penolakan generik: HTTP 200, nama model benar,
 		// tapi bukan jawaban. Ini kelas kegagalan tersendiri — bukan kuota
@@ -936,12 +984,19 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 				time.Sleep(time.Duration(rtCfg().RetryDelaySec) * time.Second)
 				continue
 			}
-			// Sudah cukup dicoba. Kembalikan teks apa adanya daripada 502:
-			// klien tetap dapat sesuatu yang bisa ditampilkan, dan dashboard
-			// mencatatnya sebagai sukses dengan upstream model yang benar.
-			// Menjadikannya 502 hanya memindahkan rasa "rusak" ke 9router.
-			logf("[model] %s: penolakan generik setelah %d percobaan, diteruskan apa adanya",
+			// Sudah cukup dicoba. JANGAN diteruskan sebagai 200.
+			//
+			// Dulu di sini penolakan dikembalikan apa adanya dengan alasan "klien
+			// tetap dapat sesuatu". Itu keliru dan bertentangan dengan aturan yang
+			// sama di jalur anonim/downgrade: kalimat seperti "I encountered an
+			// error doing what you asked" BUKAN jawaban. Klien agentik akan
+			// memperlakukannya sebagai hasil sah, lalu melanjutkan dengan asumsi
+			// yang salah — dan tidak ada cara membedakannya dari jawaban benar.
+			// 502 dengan sebab yang jelas membuat klien bisa retry atau pindah
+			// model, dan dashboard mencatatnya sebagai gagal, bukan sukses.
+			logf("[model] %s: penolakan generik setelah %d percobaan, dilaporkan sebagai gagal",
 				modelLabel(mc), attempt+1)
+			return attrib(lastErr)
 		}
 		if pickedOK {
 			recordProxyResult(picked.ID, true, "")

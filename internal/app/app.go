@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -207,10 +208,63 @@ func Run() {
 	fmt.Println()
 	warnEnvProxyIgnored()
 
+	// Port tambahan (default 8090). Satu proses, satu handler — jadi perilakunya
+	// identik dengan port utama, termasuk API key dan cookie pool.
+	//
+	// Ini bukan kemewahan: 9router menyimpan alamat provider di konfigurasinya
+	// (gw2a → http://127.0.0.1:8083/v1). Kalau servis pindah ke port lain tanpa
+	// mengubah 9router, seluruh model gw2a/* terlihat mati. Mendengarkan dua port
+	// membuat perpindahan itu tidak bisa memutus hop.
+	for _, p := range extraPorts() {
+		if p <= 0 || p == cfg.Port {
+			continue
+		}
+		addrExtra := fmt.Sprintf("%s:%d", cfg.Host, p)
+		fmt.Printf("  Also on:     http://localhost:%d/v1\n", p)
+		go func(addr string, port int) {
+			extra := &http.Server{
+				Addr:         addr,
+				Handler:      mux,
+				ReadTimeout:  30 * time.Second,
+				WriteTimeout: 0,
+			}
+			if err := extra.ListenAndServe(); err != nil {
+				// Port tambahan gagal (mis. sudah dipakai) TIDAK boleh mematikan
+				// proses: port utama tetap jalan, dan itu yang dipakai 9router.
+				fmt.Fprintf(os.Stderr, "listener tambahan :%d gagal: %v\n", port, err)
+			}
+		}(addrExtra, p)
+	}
+
 	if err := server.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// extraPorts mengembalikan port tambahan yang ikut dilayani proses ini.
+//
+// Urutan prioritas: env ALT_PORTS (dipisah koma) → config `alt_ports` → default
+// [8090]. Env menang supaya container/ service bisa menggeser tanpa menyentuh
+// file config; config menang atas default supaya bisa dimatikan dengan [].
+func extraPorts() []int {
+	if raw := strings.TrimSpace(os.Getenv("ALT_PORTS")); raw != "" {
+		if strings.EqualFold(raw, "none") || raw == "-" {
+			return nil
+		}
+		out := make([]int, 0, 2)
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if n, err := strconv.Atoi(part); err == nil && n > 0 && n < 65536 {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	return cfg.AltPorts
 }
 
 // warnEnvProxyIgnored 在设了代理环境变量、但代理池是空的时候提醒一句。

@@ -7,7 +7,20 @@ import (
 )
 
 type Config struct {
-	Port           int    `json:"port"`
+	Port int `json:"port"`
+	// AltPorts adalah port tambahan opsional yang dilayani proses yang sama
+	// (handler identik). Default KOSONG, dan itu disengaja.
+	//
+	// Riwayatnya: fitur ini dibuat untuk mengantisipasi 9router yang menyimpan
+	// alamat provider di konfigurasinya sendiri (gw2a → http://127.0.0.1:8083/v1),
+	// sehingga pindah port membuat semua model gw2a/* terlihat mati. Tapi
+	// mendengarkan port kedua secara diam-diam justru lebih berbahaya: di mesin
+	// ini 8090 sudah dipakai dashboard lain (D:\Labs\novacf\admin.py), dan
+	// pendengar kita menyerobotnya sampai dashboard itu tampak hilang.
+	//
+	// Jadi: jangan pernah menebak port. Isi hanya kalau memang tahu port itu
+	// kosong. Kalau kosong, hanya Port yang dilayani.
+	AltPorts       []int  `json:"alt_ports"`
 	Host           string `json:"host"`
 	RetryAttempts  int    `json:"retry_attempts"`
 	RetryDelaySec  int    `json:"retry_delay_sec"`
@@ -68,6 +81,7 @@ func defaultConfig() Config {
 		SaveMediaToDisk: false,
 		MediaInlineKB:   1024,
 		Port:           8083,
+		AltPorts:       nil,
 		Host:           "0.0.0.0",
 		RetryAttempts:  3,
 		RetryDelaySec:  2,
