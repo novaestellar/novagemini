@@ -1,8 +1,8 @@
-# NovaGemini
-
 <p align="center">
-  <img src="docs/logo.png" width="160" alt="NovaGemini">
+  <img src="docs/logo.png" width="132" alt="novagemini">
 </p>
+
+<h1 align="center">novagemini</h1>
 
 > **把 Gemini 网页端变成 OpenAI 兼容 API 的自托管代理** — 文本 · 思考链 · 联网搜索 · 生图 · 图生图 · 音乐 · 画布 · 视频。单个二进制、零外部依赖、带账号池与出口池的中控面板。
 
@@ -17,7 +17,7 @@
 
 ## 📋 这是什么
 
-NovaGemini 不是 API key 转卖，也不是逆向私有接口的猜谜。它用真实的浏览器指纹（chrome_146 TLS/HTTP2）向 `gemini.google.com` 的 `StreamGenerate` 端点发请求，把响应翻译成 OpenAI 协议，再把结果交回给你的客户端。
+novagemini 不是 API key 转卖，也不是逆向私有接口的猜谜。它用真实的浏览器指纹（chrome_146 TLS/HTTP2）向 `gemini.google.com` 的 `StreamGenerate` 端点发请求，把响应翻译成 OpenAI 协议，再把结果交回给你的客户端。
 
 三个设计取舍决定了它和同类工具的区别：
 
@@ -226,7 +226,7 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 | `gemini-video` | 视频（Veo，异步） | 是（通常付费） |
 | `gemini-canvas` | 交互式 HTML | 是 |
 
-**降级规则**：免费账号请求付费模型时，Google 会静默返回 `3.6 Flash` 或 `3.5 Flash-Lite`。NovaGemini 会识别这种「名不副实」并换号，实在没有账号可用时才报 502 —— 不会把降级结果当成成功返回。
+**降级规则**：免费账号请求付费模型时，Google 会静默返回 `3.6 Flash` 或 `3.5 Flash-Lite`。novagemini 会识别这种「名不副实」并换号，实在没有账号可用时才报 502 —— 不会把降级结果当成成功返回。
 
 ---
 
@@ -243,7 +243,7 @@ curl http://127.0.0.1:8083/v1/chat/completions \
 
 ### 一个浏览器配置带多个账号
 
-Google 一个浏览器配置最多 10 个账号（`/u/0` … `/u/9`）。NovaGemini 支持在同一个 cookie 下用 `authuser` 选账号：
+Google 一个浏览器配置最多 10 个账号（`/u/0` … `/u/9`）。novagemini 支持在同一个 cookie 下用 `authuser` 选账号：
 
 - cookies 里的 `__NOVA_AU=<n>` 是内部标记，发请求前自动剥离；
 - 面板上每个账号有自己的 `auth_user`，可以手动改；

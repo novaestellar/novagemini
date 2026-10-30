@@ -1,9 +1,9 @@
-# NovaGemini
+# novagemini
 
 > **Turn the Gemini web app into an OpenAI-compatible API.** Text · reasoning chains · web search · image generation · image editing · music · canvas · video. Single binary, with rate limiting and a multi-account pool behind an admin panel.
 
 <p align="center">
-  <img src="docs/logo.png" width="132" alt="NovaGemini">
+  <img src="docs/logo.png" width="132" alt="novagemini">
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 
 ## 📋 What this is
 
-NovaGemini is a reverse proxy. It does **not** wrap Google's official API (`generativelanguage.googleapis.com`) — it speaks the `gemini.google.com` web protocol directly. Therefore:
+novagemini is a reverse proxy. It does **not** wrap Google's official API (`generativelanguage.googleapis.com`) — it speaks the `gemini.google.com` web protocol directly. Therefore:
 
 - **No Google API Key**
 - **No paid quota**
@@ -28,7 +28,7 @@ NovaGemini is a reverse proxy. It does **not** wrap Google's official API (`gene
 ```
 [OpenAI SDK / Cherry Studio / Cursor / Dify / new-api / ...]
     ↓ http://localhost:8083/v1/chat/completions
-[NovaGemini]
+[novagemini]
     ↓ replicates the gemini.google.com web protocol
 [Google Gemini web app]
 ```

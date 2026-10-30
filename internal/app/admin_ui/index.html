@@ -774,6 +774,36 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
     .grid-main { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); align-items: start; }
   }
   .slot-scroll { max-height: 210px; }
+
+  /* ── Geser samping tetap ada, tapi hanya saat panel memang sempit ──────
+     table-layout tetap + sel ellipsis bikin isi tidak melimpah; min-width
+     memastikan tabel tidak pernah menghimpit kolom sampai tak terbaca,
+     dan kelebihannya bisa digeser seperti biasa. */
+  .table-scroll { overflow: auto; }
+  .table-scroll table { min-width: 780px; }
+  .table-scroll #reqTable { min-width: 1020px; }
+  .table-scroll::-webkit-scrollbar { height: 10px; width: 10px; }
+  .table-scroll::-webkit-scrollbar-thumb {
+    background: var(--line-2); border-radius: 999px;
+    border: 2px solid var(--surface);
+  }
+  .table-scroll::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+  .table-scroll::-webkit-scrollbar-track { background: transparent; }
+
+  /* ── Galeri: teks tidak boleh saling menumpuk ─────────────────────────── */
+  .gal-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .gal-card { min-width: 0; }
+  .gal-meta { min-width: 0; }
+  .gal-meta > *, .gal-name, .gal-sub {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%;
+  }
+  .gal-dl { white-space: nowrap; }
+  .gal-thumb.audio { background: var(--surface-2); }
+
+  /* ── Pemutar audio bawaan browser ikut tema, bukan bar putih ─────────── */
+  audio { color-scheme: light; }
+  :root[data-theme='dark'] audio { color-scheme: dark; }
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 10px; border-radius: var(--r-pill);
@@ -1082,7 +1112,7 @@ const pages = {
           <table>
             <colgroup>
               <col style="width:4%"><col style="width:13%"><col style="width:30%">
-              <col style="width:8%"><col style="width:6%"><col style="width:25%">
+              <col style="width:10%"><col style="width:6%"><col style="width:23%">
               <col style="width:14%">
             </colgroup>
             <thead><tr>
@@ -1141,8 +1171,8 @@ const pages = {
           <table>
             <colgroup>
               <col style="width:4%"><col style="width:15%"><col style="width:7%">
-              <col style="width:16%"><col style="width:10%"><col style="width:6%">
-              <col style="width:11%"><col style="width:21%"><col style="width:10%">
+              <col style="width:15%"><col style="width:10%"><col style="width:7%">
+              <col style="width:10%"><col style="width:16%"><col style="width:11%">
             </colgroup>
             <thead><tr>
               <th class="nw">ID</th><th class="nw">标签</th><th class="nw">状态</th>
@@ -1267,7 +1297,7 @@ const pages = {
               <tbody></tbody>
             </table>
             <p class="lede" style="margin:14px 0 0;">
-              NovaGemini · single binary · SQLite · Chrome 146 fingerprint · tiktoken cl100k_base billing
+              novagemini · single binary · SQLite · Chrome 146 fingerprint · tiktoken cl100k_base billing
             </p>
           </div>
         </div>
@@ -2452,7 +2482,7 @@ function renderLogin() {
       <h1><span class="spark" style="width:20px;height:20px;background:var(--g-sweep);
         border-radius:4px;display:inline-block;
         clip-path:polygon(50% 0,61% 39%,100% 50%,61% 61%,50% 100%,39% 61%,0 50%,39% 39%)"></span>
-        NovaGemini</h1>
+        novagemini</h1>
       <input id="tokenInput" type="password" placeholder="管理员 Token" />
       <button class="btn" onclick="doLogin()">登录</button>
       <div id="loginErr" class="err"></div>
@@ -2514,7 +2544,7 @@ const I18N_EN = {
   '视频被内容政策拒绝（换个 prompt 再试）': 'Video rejected by content policy (try another prompt)',
   'hNvQHb 里没等到可下载的产物链接（response_data）': 'Did not receive downloadable artifact URL (response_data) in hNvQHb',
   '下载重定向次数过多': 'Too many download redirects',
-  'NovaGemini': 'NovaGemini',
+  'novagemini': 'novagemini',
   '概览': 'Overview',
   '请求记录': 'Requests',
   '代理池': 'Proxy Pool',
@@ -2698,7 +2728,7 @@ const I18N_EN = {
   '启动时把文件内容导入 Cookie 池；之后从「Cookie 池」页面管理': 'Imports the file contents into the Cookie pool at startup; managed afterward from the "Cookie Pool" page',
   'compose 的 ADMIN_TOKEN': 'compose ADMIN_TOKEN',
   'compose 的 API_KEY': 'compose API_KEY',
-  'NovaGemini · single binary · SQLite · Chrome 146 fingerprint · tiktoken cl100k_base billing': 'NovaGemini · single binary · SQLite · Chrome 146 fingerprint · tiktoken cl100k_base billing',
+  'novagemini · single binary · SQLite · Chrome 146 fingerprint · tiktoken cl100k_base billing': 'novagemini · single binary · SQLite · Chrome 146 fingerprint · tiktoken cl100k_base billing',
   '取消': 'Cancel',
   '确定': 'OK',
   '提交': 'Submit',
@@ -3107,7 +3137,7 @@ function updateLangBtn() {
   const b = document.getElementById('langBtn');
   if (b) b.textContent = LANG === 'en' ? '中' : 'EN';
   document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
-  document.title = 'NovaGemini';
+  document.title = 'novagemini';
 }
 function toggleLang() {
   LANG = LANG === 'en' ? 'zh' : 'en';
