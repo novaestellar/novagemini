@@ -878,11 +878,32 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
      .grid-main (playground, benchmark, settings): panel jadi display:flex
      dengan rasio tinggi tetap, sehingga form dan textarea-nya rusak.
      Sekarang kelas .dash yang membatasi, dan tinggi panel mengikuti isinya. */
-  .grid-main.dash { grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: start; }
-  .grid-main.dash > .stack { gap: 14px; }
-  .grid-main.dash .chart-wrap { height: 210px; }
-  .grid-main.dash .slot-scroll { max-height: 210px; }
-  .grid-main.dash .table-scroll { max-height: 210px; }
+  /* Empat panel dashboard dibuat rata baris demi baris dengan subgrid:
+     kedua kolom memakai track baris yang SAMA, jadi tinggi panel kiri dan
+     kanan selalu identik tanpa flex paksa dan tanpa menebak tinggi tetap. */
+  .grid-main.dash {
+    display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+    grid-template-rows: auto auto; gap: 14px; align-items: stretch;
+  }
+  .grid-main.dash > .stack {
+    display: grid; grid-template-rows: subgrid; grid-row: span 2;
+    gap: 14px; height: auto;
+  }
+  .grid-main.dash > .stack > .panel { margin: 0; display: flex; flex-direction: column; min-height: 0; }
+  .grid-main.dash .chart-wrap { flex: 1; height: auto; min-height: 170px; }
+  .grid-main.dash .slot-scroll { flex: 1; max-height: none; }
+  .grid-main.dash .table-scroll { flex: 1; max-height: none; }
+
+  /* Selector bahasa di header: dua tombol, yang aktif terisi. */
+  .lang-seg { display: flex; gap: 2px; padding: 3px; border-radius: 999px;
+              background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.22); }
+  .lang-seg button {
+    border: 0; background: transparent; color: #E4DAFA; cursor: pointer;
+    font: 600 12px var(--sans); padding: 4px 10px; border-radius: 999px;
+    transition: background .15s var(--ease), color .15s var(--ease);
+  }
+  .lang-seg button:hover { color: #fff; }
+  .lang-seg button.on { background: #fff; color: #4A3A78; }
 
   /* Playground */
   .pg-opts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 6px; }
@@ -995,7 +1016,7 @@ const pages = {
       </div>
 
       <div class="panel">
-        <h2>账号延迟榜 · 1 小时
+        <h2>${t('账号延迟榜 · 1 小时')}
           <span class="controls"><span class="mut" id="scoreNote">载入中…</span></span>
         </h2>
         <div class="score-list" id="scoreList"><div class="empty">载入中…</div></div>
@@ -1004,7 +1025,7 @@ const pages = {
       <div class="grid-main dash">
         <div class="stack">
         <div class="panel">
-          <h2>请求量与延迟
+          <h2>${t('请求量与延迟')}
             <span class="controls">
               <select id="rangeSel">
                 <option value="24h">最近 24 小时</option>
@@ -1017,10 +1038,10 @@ const pages = {
         </div>
 
         <div class="panel">
-          <h2>按出口分组</h2>
+          <h2>${t('按出口分组')}</h2>
           <table>
             <colgroup><col style="width:46%"><col style="width:18%"><col style="width:18%"><col style="width:18%"></colgroup>
-            <thead><tr><th>出口</th><th class="nw">请求</th><th class="nw">成功</th><th class="nw">平均</th></tr></thead>
+            <thead><tr><th>出口</th><th class="nw">请求</th><th class="nw">${t('成功')}</th><th class="nw">${t('平均')}</th></tr></thead>
             <tbody>${(stats.by_proxy || []).map(p => `
               <tr><td class="truncate">${!p.proxy || p.proxy === '(direct)' ? '直连' : escapeHtml(p.proxy)}</td>
                   <td class="num nw">${fmt.num(p.requests)}</td>
@@ -1107,10 +1128,10 @@ const pages = {
 
       <div class="grid-2">
         <div class="panel">
-          <h2>按模型分组</h2>
+          <h2>${t('按模型分组')}</h2>
           <table>
             <colgroup><col style="width:38%"><col style="width:14%"><col style="width:14%"><col style="width:16%"><col style="width:18%"></colgroup>
-            <thead><tr><th>模型</th><th class="nw">请求</th><th class="nw">成功</th><th class="nw">平均</th><th class="nw">Token</th></tr></thead>
+            <thead><tr><th>${t('模型')}</th><th class="nw">请求</th><th class="nw">成功</th><th class="nw">平均</th><th class="nw">Token</th></tr></thead>
             <tbody>${(stats.by_model || []).map(m => `
               <tr><td class="truncate" title="${escapeHtml(m.model)}">${m.model}</td>
                   <td class="num nw">${fmt.num(m.requests)}</td>
@@ -1122,7 +1143,7 @@ const pages = {
           </table>
         </div>
       <div class="panel">
-        <h2>按账号分组</h2>
+        <h2>${t('按账号分组')}</h2>
         <table>
           <colgroup><col style="width:46%"><col style="width:18%"><col style="width:18%"><col style="width:18%"></colgroup>
           <thead><tr><th>Account</th><th class="nw">请求</th><th class="nw">成功</th><th class="nw">平均</th><th class="nw">Token</th></tr></thead>
@@ -1144,7 +1165,7 @@ const pages = {
           <h2>错误分类（近 ${stats.window_hours || 24}h）</h2>
           <table>
             <colgroup><col style="width:22%"><col style="width:10%"><col style="width:68%"></colgroup>
-            <thead><tr><th>类型</th><th class="nw">次数</th><th>含义 / 该怎么办</th></tr></thead>
+            <thead><tr><th>类型</th><th class="nw">${t('次数')}</th><th>含义 / 该怎么办</th></tr></thead>
             <tbody>
               ${(stats.error_breakdown || []).map(e => `<tr>
                 <td class="nw"><span class="badge ${ERR_BADGE[e.kind] || 'muted'}">${escapeHtml(e.kind)}</span></td>
@@ -1354,46 +1375,46 @@ const pages = {
       <div class="grid-main">
         <div class="stack">
           <div class="panel">
-            <h2>演练场 · 发一条真实请求
+            <h2>${t('演练场 · 发一条真实请求')}
               <span class="controls"><span class="mut" id="pgStatus"></span></span>
             </h2>
             <div class="pg-form">
               <div class="cfg-item">
-                <label for="pgModel">模型</label>
+                <label for="pgModel">${t('模型')}</label>
                 <select id="pgModel"></select>
               </div>
               <div class="cfg-item">
-                <label for="pgToken">临时 Token</label>
+                <label for="pgToken">${t('临时 Token')}</label>
                 <input type="text" id="pgToken" spellcheck="false" autocomplete="off"
                        placeholder="sk-gemini-...">
               </div>
               <div class="cfg-item">
-                <label for="pgPrompt">提示词</label>
+                <label for="pgPrompt">${t('提示词')}</label>
                 <textarea id="pgPrompt" rows="5" placeholder="例如：一只坐在窗台上的橘猫，清晨侧光"></textarea>
               </div>
               <div class="cfg-item">
-                <label>选项</label>
+                <label>${t('选项')}</label>
                 <div class="pg-opts">
-                  <label class="pg-chk"><input type="checkbox" id="pgStream" checked> 流式</label>
-                  <button class="btn primary" id="pgRun" onclick="runPlayground()">发送</button>
-                  <button class="btn" onclick="pgBuildCode()">生成代码</button>
+                  <label class="pg-chk"><input type="checkbox" id="pgStream" checked> ${t('流式')}</label>
+                  <button class="btn primary" id="pgRun" onclick="runPlayground()">${t('发送')}</button>
+                  <button class="btn" onclick="pgBuildCode()">${t('生成代码')}</button>
                 </div>
               </div>
             </div>
           </div>
           <div class="panel">
-            <h2>步骤</h2>
+            <h2>${t('步骤')}</h2>
             <ol class="pg-steps" id="pgSteps"></ol>
           </div>
         </div>
         <div class="stack">
           <div class="panel">
-            <h2>结果</h2>
-            <div class="pg-out" id="pgOut"><div class="empty">还没有请求。</div></div>
+            <h2>${t('结果')}</h2>
+            <div class="pg-out" id="pgOut"><div class="empty">${t('还没有请求。')}</div></div>
           </div>
           <div class="panel">
-            <h2>等效代码
-              <span class="controls"><button class="btn" onclick="pgCopyCode()">复制</button></span>
+            <h2>${t('等效代码')}
+              <span class="controls"><button class="btn" onclick="pgCopyCode()">${t('复制')}</button></span>
             </h2>
             <pre class="pg-code" id="pgCode">按「生成代码」查看这一段请求的 curl / Python。</pre>
           </div>
@@ -1406,35 +1427,35 @@ const pages = {
       <div class="grid-main">
         <div class="stack">
           <div class="panel">
-            <h2>基准测试 · 同一提示词打多轮
+            <h2>${t('基准测试 · 同一提示词打多轮')}
               <span class="controls"><span class="mut" id="bnStatus"></span></span>
             </h2>
             <div class="pg-form">
               <div class="cfg-item">
-                <label for="bnModels">模型</label>
+                <label for="bnModels">${t('模型')}</label>
                 <select id="bnModels" multiple size="8" style="max-width:100%;min-height:150px"></select>
               </div>
               <div class="cfg-item">
-                <label for="bnRuns">每模型次数</label>
+                <label for="bnRuns">${t('每模型次数')}</label>
                 <input type="number" id="bnRuns" value="3" min="1" max="20">
               </div>
               <div class="cfg-item">
-                <label for="bnPrompt">提示词</label>
-                <textarea id="bnPrompt" rows="3">balas satu kata: OK</textarea>
+                <label for="bnPrompt">${t('提示词')}</label>
+                <textarea id="bnPrompt" rows="3">回复一个词：OK</textarea>
               </div>
               <div class="cfg-item">
-                <label>选项</label>
+                <label>${t('选项')}</label>
                 <div class="pg-opts">
-                  <label class="pg-chk"><input type="checkbox" id="bnStream"> 流式</label>
-                  <button class="btn primary" onclick="runBench()">开始</button>
-                  <button class="btn" onclick="benchStop()">停止</button>
-                  <button class="btn" onclick="benchCopy()">复制 JSON</button>
+                  <label class="pg-chk"><input type="checkbox" id="bnStream"> ${t('流式')}</label>
+                  <button class="btn primary" onclick="runBench()">${t('开始')}</button>
+                  <button class="btn" onclick="benchStop()">${t('停止')}</button>
+                  <button class="btn" onclick="benchCopy()">${t('复制 JSON')}</button>
                 </div>
               </div>
             </div>
           </div>
           <div class="panel">
-            <h2>进度</h2>
+            <h2>${t('进度')}</h2>
             <ol class="pg-steps" id="bnLog"></ol>
           </div>
         </div>
@@ -1448,10 +1469,10 @@ const pages = {
                   <col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:12%">
                 </colgroup>
                 <thead><tr>
-                  <th>模型</th><th class="nw">次数</th><th class="nw">成功</th>
-                  <th class="nw">中位</th><th class="nw">最快</th><th class="nw">最慢</th><th class="nw">平均</th>
+                  <th>${t('模型')}</th><th class="nw">次数</th><th class="nw">成功</th>
+                  <th class="nw">${t('中位')}</th><th class="nw">${t('最快')}</th><th class="nw">${t('最慢')}</th><th class="nw">平均</th>
                 </tr></thead>
-                <tbody id="bnBody"><tr><td colspan="7" class="empty">还没有跑过。</td></tr></tbody>
+                <tbody id="bnBody"><tr><td colspan="7" class="empty">${t('还没有跑过。')}</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -2884,7 +2905,7 @@ function benchRender() {
   const body = document.getElementById('bnBody');
   if (!body) return;
   if (!benchData.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">还没有跑过。</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" class="empty">' + t('还没有跑过。') + '</td></tr>';
     return;
   }
   body.innerHTML = benchData.map(row => {
@@ -2988,6 +3009,10 @@ function renderShell() {
         </div>
       </div>
       <div class="pills" id="sideStat"></div>
+      <div class="lang-seg" role="group" aria-label="Language">
+        <button type="button" data-lang="zh" onclick="setLang('zh')">中文</button>
+        <button type="button" data-lang="en" onclick="setLang('en')">EN</button>
+      </div>
       <button class="theme-btn" id="themeBtn" type="button" onclick="toggleTheme()"
               title="Terang / gelap" aria-label="Ganti tema">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 109 9 7 7 0 01-9-9z"/></svg>
@@ -3018,6 +3043,7 @@ function renderShell() {
   switchPage(Object.prototype.hasOwnProperty.call(PAGE_TITLES, hashPage) ? hashPage : 'dashboard');
   loadSideStat();
   syncThemeBtn();
+  updateLangBtn();
 }
 
 function toggleTheme() {
@@ -3746,7 +3772,20 @@ function i18nInit() {
   updateLangBtn();
   if (LANG === 'en') i18nApply();
 }
+function setLang(lang) {
+  LANG = lang === 'en' ? 'en' : 'zh';
+  try { localStorage.setItem('lang', LANG); } catch (e) {}
+  document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
+  i18nApply();
+  updateLangBtn();
+  if (currentPage) switchPage(currentPage, true);
+}
+
 function updateLangBtn() {
+  document.querySelectorAll('.lang-seg button').forEach(b => {
+    b.classList.toggle('on', b.dataset.lang === LANG);
+    b.setAttribute('aria-pressed', b.dataset.lang === LANG ? 'true' : 'false');
+  });
   const b = document.getElementById('langBtn');
   if (b) b.textContent = LANG === 'en' ? '中' : 'EN';
   document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
