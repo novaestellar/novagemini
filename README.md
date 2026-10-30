@@ -360,6 +360,8 @@ Google 一个浏览器配置最多 10 个账号（`/u/0` … `/u/9`）。novagem
 
 **面板不要裸奔在公网。** `admin_token` 为空时面板无密码。反代 + HTTPS + 强 token，三件一起上。
 
+**cookie 保鲜有两条腿。** 服务端每 10 分钟对每个账号跑一次 `RotateCookies`（`rotate_disabled=0`）；同时 Windows 计划任务 `novagemini-cookie-refresh` 每 30 分钟把浏览器配置里的会话重新灌进服务端（`tools\refresh-cookies.cmd`）。浏览器开着时服务端会被 429，靠这份计划任务兜底；浏览器关着时靠服务端自己续。两条都断，账号才会真的过期。
+
 **备份就是复制文件。** `data/gemini.db` + `config.json`，两个文件拿走，换机器即恢复。
 
 ---
