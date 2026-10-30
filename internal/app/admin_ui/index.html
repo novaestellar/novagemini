@@ -804,6 +804,14 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
   /* ── Pemutar audio bawaan browser ikut tema, bukan bar putih ─────────── */
   audio { color-scheme: light; }
   :root[data-theme='dark'] audio { color-scheme: dark; }
+
+  /* Badge status tidak boleh dipotong: kolomnya sudah dilegakan, dan badge
+     memakai huruf lebih kecil supaya 2-4 karakter selalu utuh. */
+  .table-scroll .badge {
+    font-size: 11px; padding: 2px 7px; line-height: 1.45;
+    max-width: none; display: inline-block; vertical-align: middle;
+  }
+  .table-scroll td .badge + .badge { margin-left: 4px; }
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 10px; border-radius: var(--r-pill);
@@ -1170,9 +1178,9 @@ const pages = {
         <div class="table-scroll">
           <table>
             <colgroup>
-              <col style="width:4%"><col style="width:15%"><col style="width:7%">
+              <col style="width:4%"><col style="width:15%"><col style="width:9%">
               <col style="width:15%"><col style="width:10%"><col style="width:7%">
-              <col style="width:10%"><col style="width:16%"><col style="width:11%">
+              <col style="width:10%"><col style="width:14%"><col style="width:11%">
             </colgroup>
             <thead><tr>
               <th class="nw">ID</th><th class="nw">标签</th><th class="nw">状态</th>
