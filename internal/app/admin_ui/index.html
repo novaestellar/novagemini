@@ -812,6 +812,30 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
     max-width: none; display: inline-block; vertical-align: middle;
   }
   .table-scroll td .badge + .badge { margin-left: 4px; }
+
+  /* ── Lebar tabel mengikuti ISI, bukan dipaksa 100% ─────────────────────
+     Versi sebelumnya memakai table-layout: fixed + width: 100%. Akibatnya
+     tabel selalu selebar panel, kolom dipersempit paksa, isi dipotong
+     ellipsis, dan karena tidak ada yang melimpah, scroll horizontal tidak
+     pernah muncul. Sekarang: kolom selebar isinya, tabel boleh lebih lebar
+     dari panel, dan .table-scroll yang menggeser. */
+  .table-scroll { overflow: auto !important; }
+  .table-scroll col { width: auto !important; }
+  .table-scroll table {
+    table-layout: auto !important;
+    width: max-content !important;
+    min-width: 100% !important;
+  }
+  .table-scroll th, .table-scroll td {
+    white-space: nowrap; overflow: visible; text-overflow: clip;
+  }
+  /* Hanya kolom yang memang panjang yang dibatasi supaya tabel tidak
+     melebar ribuan piksel gara-gara satu pesan error atau satu URL. */
+  .table-scroll td.truncate,
+  .table-scroll td.pre.truncate,
+  .table-scroll td.err,
+  .table-scroll td.cell-endpoint { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+  .table-scroll td.pre, .table-scroll td .pre { white-space: nowrap; }
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 10px; border-radius: var(--r-pill);
