@@ -1500,6 +1500,29 @@ const pages = {
 
         <div class="stack">
           <div class="card">
+            <h2>客户端 Key
+              <span class="controls"><button class="btn muted" onclick="createClientKey()">+ 新建 Key</button></span>
+            </h2>
+            <p class="lede">
+              每个客户端一把key，可单独禁用或删除，也可以设每把key的 RPM / RPH 上限。
+              与上面的全局 API Key 并存，两者都能调用 <code>/v1/*</code>。
+            </p>
+            <div class="table-scroll short">
+              <table id="ckTable">
+                <colgroup>
+                  <col style="width:26%"><col style="width:24%"><col style="width:10%">
+                  <col style="width:10%"><col style="width:10%"><col style="width:20%">
+                </colgroup>
+                <thead><tr>
+                  <th>名称</th><th>Key</th><th class="nw">RPM</th><th class="nw">RPH</th>
+                  <th class="nw">状态</th><th class="nw">操作</th>
+                </tr></thead>
+                <tbody id="ckBody"><tr><td colspan="6" class="empty">载入中…</td></tr></tbody>
+              </table>
+            </div>
+            <p class="hint" id="ckHint" style="display:none"></p>
+          </div>
+          <div class="card">
             <h2>API Key</h2>
             <p class="lede">
               ${k.locked
@@ -2606,6 +2629,7 @@ async function switchPage(name, force = false) {
   }
   if (name === 'settings') {
     await loadRtCfg();
+    await loadClientKeys();
   }
 }
 
@@ -2996,6 +3020,81 @@ function benchCopy() {
     const st = document.getElementById('bnStatus');
     if (st) st.textContent = 'JSON 已复制';
   });
+}
+
+// ── Client keys ──────────────────────────────────────────────────────────
+async function loadClientKeys() {
+  const body = document.getElementById('ckBody');
+  if (!body) return;
+  try {
+    const data = await api('api/client-keys');
+    const items = data.items || [];
+    if (!items.length) {
+      body.innerHTML = '<tr><td colspan="6" class="empty">还没有客户端 key。</td></tr>';
+      return;
+    }
+    body.innerHTML = items.map(k => `
+      <tr>
+        <td class="truncate" title="${escapeHtml(k.name)}">${escapeHtml(k.name)}</td>
+        <td class="mono">${escapeHtml(k.masked)}</td>
+        <td class="num nw">${k.rpm || '∞'}</td>
+        <td class="num nw">${k.rph || '∞'}</td>
+        <td class="nw">${k.enabled
+          ? '<span class="badge ok">启用</span>'
+          : '<span class="badge muted">停用</span>'}</td>
+        <td class="nw"><span class="actions">
+          <button class="btn muted" onclick="rotateClientKey(${k.id})">轮换</button>
+          <button class="btn muted" onclick="toggleClientKey(${k.id}, ${k.enabled ? 'false' : 'true'})">${k.enabled ? '停用' : '启用'}</button>
+          <button class="btn danger" onclick="deleteClientKey(${k.id})">删除</button>
+        </span></td>
+      </tr>`).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">' + escapeHtml(e.message || 'load failed') + '</td></tr>';
+  }
+}
+
+function ckShowKey(key) {
+  const hint = document.getElementById('ckHint');
+  if (!hint) return;
+  hint.style.display = 'block';
+  hint.textContent = '新 Key（只显示这一次）: ' + key;
+}
+
+async function createClientKey() {
+  const name = prompt('客户端名称', 'client');
+  if (name === null) return;
+  const rpm = prompt('RPM 上限（0 = 不限）', '0');
+  const rph = prompt('RPH 上限（0 = 不限）', '0');
+  const r = await fetch('api/client-keys', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, rpm: parseInt(rpm || '0', 10) || 0, rph: parseInt(rph || '0', 10) || 0 }),
+  });
+  const j = await r.json();
+  if (j.key) ckShowKey(j.key);
+  await loadClientKeys();
+}
+
+async function toggleClientKey(id, enabled) {
+  await fetch('api/client-keys/' + id, {
+    method: 'PATCH', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: enabled }),
+  });
+  await loadClientKeys();
+}
+
+async function rotateClientKey(id) {
+  const r = await fetch('api/client-keys/' + id + '/rotate', { method: 'POST', credentials: 'include' });
+  const j = await r.json();
+  if (j.key) ckShowKey(j.key);
+  await loadClientKeys();
+}
+
+async function deleteClientKey(id) {
+  if (!confirm('删除这把 key？该客户端会立即失效。')) return;
+  await fetch('api/client-keys/' + id, { method: 'DELETE', credentials: 'include' });
+  await loadClientKeys();
 }
 
 function renderShell() {

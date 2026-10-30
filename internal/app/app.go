@@ -152,6 +152,8 @@ func Run() {
 		mux.HandleFunc("/admin/api/apikey", requireAuth(handleAdminAPIKey))
 		mux.HandleFunc("/admin/api/usage", requireAuth(handleAdminUsage))
 	mux.HandleFunc("/admin/api/scoreboard", requireAuth(handleAdminScoreboard))
+	mux.HandleFunc("/admin/api/client-keys", requireAuth(handleAdminClientKeys))
+	mux.HandleFunc("/admin/api/client-keys/", requireAuth(handleAdminClientKeyItem))
 		mux.HandleFunc("/admin/api/config", requireAuth(handleAdminConfig))
 		mux.HandleFunc("/admin/api/cookies", requireAuth(handleAdminCookies))
 		mux.HandleFunc("/admin/api/cookies/", requireAuth(handleAdminCookieItem))

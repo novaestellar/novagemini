@@ -201,6 +201,18 @@ func getDB() *dbx {
 			// aktif, operator bisa menetapkan tier sendiri dan probe tidak akan
 			// menimpanya.
 			_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN tier_override TEXT NOT NULL DEFAULT ''`)
+
+			// Kunci per klien: satu baris per klien, dengan kuota sendiri.
+			_, _ = conn.Exec(`CREATE TABLE IF NOT EXISTS client_keys (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		name          TEXT NOT NULL DEFAULT '',
+		key           TEXT NOT NULL UNIQUE,
+		rpm           INTEGER NOT NULL DEFAULT 0,
+		rph           INTEGER NOT NULL DEFAULT 0,
+		enabled       INTEGER NOT NULL DEFAULT 1,
+		created_at    INTEGER NOT NULL DEFAULT 0,
+		last_used_at  INTEGER NOT NULL DEFAULT 0
+	)`)
 			_, _ = conn.Exec(`ALTER TABLE requests DROP COLUMN prompt_preview`)
 			_, _ = conn.Exec(`ALTER TABLE requests DROP COLUMN response_preview`)
 		}
@@ -304,4 +316,3 @@ func dbPermHint(dir string) string {
 		"        2) 保留 bind mount 就把属主改过来：sudo chown -R 65532:65532 ./data\n",
 		uid, dir)
 }
-

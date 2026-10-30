@@ -260,6 +260,35 @@ Google 一个浏览器配置最多 10 个账号（`/u/0` … `/u/9`）。novagem
 
 ---
 
+## 🔑 客户端 Key
+
+除了全局 `API_KEY`，面板「设置」页可以给每个客户端单独发一把 key（`sk-gm-…`）：
+
+| 能力 | 说明 |
+|---|---|
+| 独立 kunci | 每个 klien punya kunci sendiri; mencabut satu tidak memutus yang lain |
+| Kuota | `rpm` / `rph` per kunci (0 = 不限), dihitung di memori per jam berjalan |
+| Status | 启用 / 停用 — kunci nonaktif langsung dijawab 401 |
+| Rotasi | 生成 kunci baru untuk klien yang sama tanpa menghapus barisnya |
+| Privasi | Daftar hanya menampilkan bentuk tersamarkan; kunci penuh muncul sekali saat dibuat |
+
+Kedua jenis kunci berlaku sama di `/v1/*`:
+
+```bash
+curl http://127.0.0.1:8083/v1/models \
+  -H "Authorization: Bearer sk-gm-…"
+```
+
+Endpoint pengelolaan (dari panel, butuh sesi admin):
+
+```
+GET    /admin/api/client-keys
+POST   /admin/api/client-keys            {name, rpm, rph}  -> {key} sekali
+PATCH  /admin/api/client-keys/{id}       {name?, rpm?, rph?, enabled?}
+POST   /admin/api/client-keys/{id}/rotate
+DELETE /admin/api/client-keys/{id}
+```
+
 ## 🛡️ 代理池
 
 - 每个代理 = 一个独立出口 + 独立配额；

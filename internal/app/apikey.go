@@ -117,7 +117,38 @@ func requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 		if got == "" {
 			got = strings.TrimSpace(r.Header.Get("x-api-key"))
 		}
-		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(key)) != 1 {
+		if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(key)) == 1 {
+			next(w, r)
+			return
+		}
+		// Kunci per klien: berlaku sama seperti kunci global, tapi punya
+		// kuota sendiri dan bisa dicabut tanpa mengganggu klien lain.
+		if ck, ok := clientKeyLookup(got); ok {
+			if !ck.Enabled {
+				writeJSON(w, 401, map[string]interface{}{
+					"error": map[string]string{
+						"message": "This client key is disabled.",
+						"type":    "invalid_request_error",
+						"code":    "invalid_api_key",
+					},
+				})
+				return
+			}
+			if !clientKeyAllow(ck) {
+				writeJSON(w, 429, map[string]interface{}{
+					"error": map[string]string{
+						"message": "Client key quota exceeded (rpm/rph).",
+						"type":    "rate_limit_error",
+						"code":    "client_key_quota",
+					},
+				})
+				return
+			}
+			clientKeyTouch(ck.ID)
+			next(w, r)
+			return
+		}
+		{
 			writeJSON(w, 401, map[string]interface{}{
 				"error": map[string]string{
 					"message": "Invalid API key. Set Authorization: Bearer <key> or x-api-key header.",
