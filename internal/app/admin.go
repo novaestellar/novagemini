@@ -752,3 +752,12 @@ func errorBreakdown(since int64) []map[string]interface{} {
 	})
 	return out
 }
+
+// handleAdminScoreboard membuka papan skor latensi per akun ke panel.
+func handleAdminScoreboard(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]interface{}{
+		"items":         latencyRows(),
+		"board_avg_ms":  latencyBoardAverage(),
+		"threshold_pct": 25,
+	})
+}

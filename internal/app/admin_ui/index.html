@@ -847,6 +847,28 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .grid-main table th, .grid-2 table th { font-size: 11.5px; }
+
+  /* Papan skor: bar = latensi rata-rata 1 jam, tercepat di atas. */
+  .score-list { padding: 4px 19px 14px; }
+  .score-row {
+    display: grid; grid-template-columns: 148px minmax(0,1fr) 66px 46px;
+    gap: 11px; align-items: center; padding: 6px 0;
+    font-size: 12.5px; border-bottom: 1px solid var(--line);
+  }
+  .score-row:last-child { border-bottom: 0; }
+  .score-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+  .score-bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  .score-bar > i { display: block; height: 100%; border-radius: 999px;
+                   background: linear-gradient(90deg, var(--accent), var(--accent-deep)); }
+  .score-ms { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+  .score-n { text-align: right; color: var(--ink-3); font-size: 11.5px; }
+  /* Playground */
+  .pg-form .cfg-item { border-bottom: 0; padding: 8px 0; }
+  .pg-form textarea { width: 100%; max-width: none; min-height: 84px; }
+  .pg-out { padding: 14px 19px 18px; font-size: 13px; line-height: 1.65; }
+  .pg-out img, .pg-out video { max-width: 100%; border-radius: var(--r); border: 1px solid var(--line); }
+  .pg-out audio { width: 100%; }
+  .pg-out pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 10px; border-radius: var(--r-pill);
@@ -942,6 +964,13 @@ const pages = {
         <div class="kpi"><div class="label">平均延迟</div><div class="value">${fmt.ms(stats.avg_ms)}</div></div>
         <div class="kpi"><div class="label">输入 Token</div><div class="value">${fmt.num(stats.prompt_tokens)}</div></div>
         <div class="kpi"><div class="label">输出 Token</div><div class="value">${fmt.num(stats.output_tokens)}</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>账号延迟榜 · 1 小时
+          <span class="controls"><span class="mut" id="scoreNote">载入中…</span></span>
+        </h2>
+        <div class="score-list" id="scoreList"><div class="empty">载入中…</div></div>
       </div>
 
       <div class="grid-main">
@@ -1279,6 +1308,39 @@ const pages = {
         <div id="galRoot">${galleryBody(items || [])}</div>
       </div>
     `;
+  },
+
+  playground: async () => {
+    return `
+      <div class="grid-main">
+        <div class="panel">
+          <h2>演练场 · 发一条真实请求</h2>
+          <div class="pg-form">
+            <div class="cfg-item">
+              <label for="pgModel">模型</label>
+              <select id="pgModel"></select>
+            </div>
+            <div class="cfg-item">
+              <label for="pgPrompt">提示词</label>
+              <textarea id="pgPrompt" rows="4" placeholder="例如：一只坐在窗台上的橘猫，清晨侧光"></textarea>
+            </div>
+            <div class="cfg-item">
+              <label>选项</label>
+              <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding-top:6px">
+                <label style="display:flex;gap:6px;align-items:center;margin:0;padding:0;font-weight:400">
+                  <input type="checkbox" id="pgStream"> 流式
+                </label>
+                <button class="btn primary" id="pgRun" onclick="runPlayground()">发送</button>
+                <span class="mut" id="pgStatus"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>结果</h2>
+          <div class="pg-out" id="pgOut"><div class="empty">还没有请求。</div></div>
+        </div>
+      </div>`;
   },
 
   settings: async () => {
@@ -2382,6 +2444,7 @@ async function switchPage(name, force = false) {
     await loadChart('24h');
     document.getElementById('rangeSel').onchange = (e) => loadChart(e.target.value);
     await populateTestProxies();
+    await loadScoreboard();
   }
   if (name === 'requests') {
     reqOffset = 0;
@@ -2397,6 +2460,9 @@ async function switchPage(name, force = false) {
       stopGalleryAuto();
       if (auto.checked) galleryTimer = setInterval(() => loadGallery(true), 5000);
     };
+  }
+  if (name === 'playground') {
+    await initPlayground();
   }
   if (name === 'settings') {
     await loadRtCfg();
@@ -2424,17 +2490,153 @@ const NAV = [
   ['proxies', '代理池'],
   ['cookies', 'Cookie 池'],
   ['gallery', '媒体产物'],
+  ['playground', '演练场'],
   ['settings', '设置'],
 ];
 const PAGE_TITLES = {
   dashboard: '概览', requests: '请求记录', proxies: '代理池', cookies: 'Cookie 池',
-  gallery: '媒体产物', settings: '设置',
+  gallery: '媒体产物', playground: '演练场', settings: '设置',
 };
 
 function toggleSidebar() {
   const el = document.querySelector('.sidebar');
   el.classList.toggle('collapsed');
   try { localStorage.setItem('sbCollapsed', el.classList.contains('collapsed') ? '1' : ''); } catch (e) {}
+}
+
+// ── Papan skor latensi ───────────────────────────────────────────────────
+async function loadScoreboard() {
+  const box = document.getElementById('scoreList');
+  const note = document.getElementById('scoreNote');
+  if (!box) return;
+  try {
+    const data = await api('api/scoreboard');
+    const items = data.items || [];
+    if (!items.length) {
+      box.innerHTML = '<div class="empty">暂无样本 · 每个账号成功响应几次后才会出现</div>';
+      if (note) note.textContent = '切换阈值 ' + (data.threshold_pct || 25) + '%';
+      return;
+    }
+    const max = Math.max(...items.map(i => i.avg_ms), 1);
+    box.innerHTML = items.map(i => `
+      <div class="score-row">
+        <span class="score-name" title="${escapeHtml(i.label)}">${escapeHtml(i.label)}</span>
+        <span class="score-bar"><i style="width:${Math.max(4, Math.round(i.avg_ms / max * 100))}%"></i></span>
+        <span class="score-ms">${fmt.ms(Math.round(i.avg_ms))}</span>
+        <span class="score-n">${i.n}x</span>
+      </div>`).join('');
+    if (note) note.textContent = '平均 ' + fmt.ms(Math.round(data.board_avg_ms || 0)) +
+      ' · 切换阈值 ' + (data.threshold_pct || 25) + '%';
+  } catch (e) {
+    box.innerHTML = '<div class="empty">' + escapeHtml(e.message || 'load failed') + '</div>';
+  }
+}
+
+// ── Playground ───────────────────────────────────────────────────────────
+const PG_MODELS = [
+  'gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.8-flash-thinking',
+  'gemini-3.7-flash', 'gemini-3.1-pro', 'gemini-3.5-flash-lite',
+  'gemini-4-argon', 'gemini-4-argon-low', 'gemini-4-argon-high',
+  'gemini-image', 'gemini-music', 'gemini-video', 'gemini-canvas',
+];
+
+async function initPlayground() {
+  const sel = document.getElementById('pgModel');
+  if (!sel || sel.dataset.ready === '1') return;
+  let models = PG_MODELS;
+  try {
+    const k = await api('api/apikey');
+    const r = await fetch('v1/models', { headers: { Authorization: 'Bearer ' + (k.key || '') } });
+    if (r.ok) {
+      const j = await r.json();
+      const ids = (j.data || []).map(m => m.id);
+      if (ids.length) models = ids;
+    }
+  } catch (e) {}
+  sel.innerHTML = models.map(m => '<option value="' + m + '">' + m + '</option>').join('');
+  sel.dataset.ready = '1';
+}
+
+function pgRender(content, model) {
+  const out = document.getElementById('pgOut');
+  const text = content || '';
+  const m = text.match(/(data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+|\/files\/[^\s)"']+)/i);
+  if (m) {
+    const url = m[1];
+    if (model.includes('image')) { out.innerHTML = '<img src="' + url + '" alt="hasil">'; return; }
+    if (model.includes('music')) { out.innerHTML = '<audio controls src="' + url + '"></audio>'; return; }
+    if (model.includes('video')) { out.innerHTML = '<video controls src="' + url + '"></video>'; return; }
+    if (model.includes('canvas')) {
+      const block = text.match(/```html([\s\S]*?)```/);
+      const html = block ? block[1] : text;
+      const blob = new Blob([html], { type: 'text/html' });
+      out.innerHTML = '<iframe src="' + URL.createObjectURL(blob) +
+        '" style="width:100%;height:520px;border:1px solid var(--line);border-radius:14px"></iframe>';
+      return;
+    }
+  }
+  out.innerHTML = '<pre>' + escapeHtml(text) + '</pre>';
+}
+
+async function runPlayground() {
+  const model = document.getElementById('pgModel').value;
+  const prompt = (document.getElementById('pgPrompt').value || '').trim();
+  const status = document.getElementById('pgStatus');
+  const out = document.getElementById('pgOut');
+  const stream = document.getElementById('pgStream').checked;
+  if (!prompt) { status.textContent = '提示词为空'; return; }
+  let key = '';
+  try { key = (await api('api/apikey')).key || ''; } catch (e) {}
+  status.textContent = '发送中…';
+  out.innerHTML = '<div class="empty">等待上游…</div>';
+  const t0 = performance.now();
+  try {
+    const r = await fetch('v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({ model: model, messages: [{ role: 'user', content: prompt }], stream: stream }),
+    });
+    if (!r.ok) {
+      const err = await r.text();
+      out.innerHTML = '<pre>' + escapeHtml(err.slice(0, 2000)) + '</pre>';
+      status.textContent = 'HTTP ' + r.status;
+      return;
+    }
+    if (stream) {
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '', acc = '';
+      out.innerHTML = '<pre id="pgStreamOut"></pre>';
+      const el = document.getElementById('pgStreamOut');
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buf += dec.decode(chunk.value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const j = JSON.parse(payload);
+            const d = (j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content) || '';
+            if (d) { acc += d; el.textContent = acc; }
+          } catch (e) {}
+        }
+      }
+      status.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's · ' + acc.length + ' 字符';
+      if (/image|music|video|canvas/.test(model)) pgRender(acc, model);
+      return;
+    }
+    const j = await r.json();
+    const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    status.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's · 上游 ' + (j.model || model);
+    pgRender(content, model);
+  } catch (e) {
+    out.innerHTML = '<pre>' + escapeHtml(e.message || String(e)) + '</pre>';
+    status.textContent = '失败';
+  }
 }
 
 function renderShell() {

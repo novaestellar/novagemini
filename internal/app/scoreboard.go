@@ -106,3 +106,41 @@ func fasterAccount(a, b int64) bool {
 	}
 	return sa*latDelta < sb
 }
+
+// LatRow adalah satu baris papan skor untuk panel.
+type LatRow struct {
+	ID    int64   `json:"id"`
+	Label string  `json:"label"`
+	AvgMs float64 `json:"avg_ms"`
+	N     int     `json:"n"`
+}
+
+// latencyRows mengembalikan akun yang punya sampel, tercepat lebih dulu.
+// Dipakai /admin/api/scoreboard supaya papan skor bisa dilihat, bukan cuma
+// bekerja diam-diam.
+func latencyRows() []LatRow {
+	now := time.Now().Unix()
+	latMu.Lock()
+	snapshot := make(map[int64]LatRow, len(latBoard))
+	for id, w := range latBoard {
+		if w.n == 0 || now-w.since > latWindowSeconds {
+			continue
+		}
+		snapshot[id] = LatRow{ID: id, AvgMs: float64(w.ms) / float64(w.n), N: w.n}
+	}
+	latMu.Unlock()
+
+	out := make([]LatRow, 0, len(snapshot))
+	for _, a := range accountList() {
+		if row, ok := snapshot[a.ID]; ok {
+			row.Label = a.Label
+			out = append(out, row)
+		}
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].AvgMs < out[j-1].AvgMs; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
