@@ -888,6 +888,9 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
   .pg-steps li { padding: 3px 0; line-height: 1.5; }
   .pg-steps li.ok::marker { color: var(--sage); }
   .pg-steps li.bad { color: var(--coral); }
+  #bnModels { font-family: var(--mono); font-size: 12px; }
+  #bnModels option { padding: 2px 4px; }
+  #bnTable td.num { font-variant-numeric: tabular-nums; }
   .pg-code { margin: 0; padding: 14px 19px 18px; font-family: var(--mono);
              font-size: 11.5px; line-height: 1.6; color: var(--ink-2);
              white-space: pre-wrap; word-break: break-word; }
@@ -1390,6 +1393,64 @@ const pages = {
               <span class="controls"><button class="btn" onclick="pgCopyCode()">复制</button></span>
             </h2>
             <pre class="pg-code" id="pgCode">按「生成代码」查看这一段请求的 curl / Python。</pre>
+          </div>
+        </div>
+      </div>`;
+  },
+
+  benchmark: async () => {
+    return `
+      <div class="grid-main">
+        <div class="stack">
+          <div class="panel">
+            <h2>基准测试 · 同一提示词打多轮
+              <span class="controls"><span class="mut" id="bnStatus"></span></span>
+            </h2>
+            <div class="pg-form">
+              <div class="cfg-item">
+                <label for="bnModels">模型</label>
+                <select id="bnModels" multiple size="8" style="max-width:100%;min-height:150px"></select>
+              </div>
+              <div class="cfg-item">
+                <label for="bnRuns">每模型次数</label>
+                <input type="number" id="bnRuns" value="3" min="1" max="20">
+              </div>
+              <div class="cfg-item">
+                <label for="bnPrompt">提示词</label>
+                <textarea id="bnPrompt" rows="3">balas satu kata: OK</textarea>
+              </div>
+              <div class="cfg-item">
+                <label>选项</label>
+                <div class="pg-opts">
+                  <label class="pg-chk"><input type="checkbox" id="bnStream"> 流式</label>
+                  <button class="btn primary" onclick="runBench()">开始</button>
+                  <button class="btn" onclick="benchStop()">停止</button>
+                  <button class="btn" onclick="benchCopy()">复制 JSON</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>进度</h2>
+            <ol class="pg-steps" id="bnLog"></ol>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="panel">
+            <h2>结果</h2>
+            <div class="table-scroll short">
+              <table id="bnTable">
+                <colgroup>
+                  <col style="width:34%"><col style="width:9%"><col style="width:9%">
+                  <col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:12%">
+                </colgroup>
+                <thead><tr>
+                  <th>模型</th><th class="nw">次数</th><th class="nw">成功</th>
+                  <th class="nw">中位</th><th class="nw">最快</th><th class="nw">最慢</th><th class="nw">平均</th>
+                </tr></thead>
+                <tbody id="bnBody"><tr><td colspan="7" class="empty">还没有跑过。</td></tr></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>`;
@@ -2516,6 +2577,9 @@ async function switchPage(name, force = false) {
   if (name === 'playground') {
     await initPlayground();
   }
+  if (name === 'benchmark') {
+    await initBench();
+  }
   if (name === 'settings') {
     await loadRtCfg();
   }
@@ -2543,11 +2607,12 @@ const NAV = [
   ['cookies', 'Cookie 池'],
   ['gallery', '媒体产物'],
   ['playground', '演练场'],
+  ['benchmark', '基准测试'],
   ['settings', '设置'],
 ];
 const PAGE_TITLES = {
   dashboard: '概览', requests: '请求记录', proxies: '代理池', cookies: 'Cookie 池',
-  gallery: '媒体产物', playground: '演练场', settings: '设置',
+  gallery: '媒体产物', playground: '演练场', benchmark: '基准测试', settings: '设置',
 };
 
 function toggleSidebar() {
@@ -2759,6 +2824,156 @@ async function runPlayground() {
   }
 }
 
+// ── Benchmark runner ─────────────────────────────────────────────────────
+let benchAbort = false;
+let benchData = [];
+
+async function initBench() {
+  const sel = document.getElementById('bnModels');
+  if (!sel || sel.dataset.ready === '1') return;
+  let models = PG_MODELS;
+  try {
+    const k = await api('api/apikey');
+    const r = await fetch('v1/models', { headers: { Authorization: 'Bearer ' + (k.key || '') } });
+    if (r.ok) {
+      const j = await r.json();
+      const ids = (j.data || []).map(m => m.id);
+      if (ids.length) models = ids;
+    }
+  } catch (e) {}
+  sel.innerHTML = models.map(m => '<option value="' + m + '">' + m + '</option>').join('');
+  ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-4-argon'].forEach(m => {
+    const o = [...sel.options].find(x => x.value === m);
+    if (o) o.selected = true;
+  });
+  sel.dataset.ready = '1';
+}
+
+function benchStop() {
+  benchAbort = true;
+  const st = document.getElementById('bnStatus');
+  if (st) st.textContent = '已停止';
+}
+
+function benchLog(text, cls) {
+  const box = document.getElementById('bnLog');
+  if (!box) return;
+  const li = document.createElement('li');
+  li.textContent = text;
+  if (cls) li.className = cls;
+  box.appendChild(li);
+  box.scrollTop = box.scrollHeight;
+}
+
+function benchStats(ms) {
+  const v = ms.slice().sort((a, b) => a - b);
+  const sum = v.reduce((a, b) => a + b, 0);
+  return {
+    n: v.length,
+    p50: v[Math.floor(v.length / 2)] || 0,
+    min: v[0] || 0,
+    max: v[v.length - 1] || 0,
+    avg: v.length ? sum / v.length : 0,
+  };
+}
+
+function benchRender() {
+  const body = document.getElementById('bnBody');
+  if (!body) return;
+  if (!benchData.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">还没有跑过。</td></tr>';
+    return;
+  }
+  body.innerHTML = benchData.map(row => {
+    const s = benchStats(row.ms);
+    return '<tr>' +
+      '<td class="truncate" title="' + escapeHtml(row.model) + '">' + escapeHtml(row.model) + '</td>' +
+      '<td class="num nw">' + row.runs + '</td>' +
+      '<td class="num nw">' + row.ok + '</td>' +
+      '<td class="num nw">' + fmt.ms(Math.round(s.p50)) + '</td>' +
+      '<td class="num nw">' + fmt.ms(Math.round(s.min)) + '</td>' +
+      '<td class="num nw">' + fmt.ms(Math.round(s.max)) + '</td>' +
+      '<td class="num nw">' + fmt.ms(Math.round(s.avg)) + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+async function runBench() {
+  const sel = document.getElementById('bnModels');
+  const models = [...sel.selectedOptions].map(o => o.value);
+  const runs = Math.max(1, Math.min(20, parseInt(document.getElementById('bnRuns').value, 10) || 3));
+  const prompt = (document.getElementById('bnPrompt').value || '').trim();
+  const stream = document.getElementById('bnStream').checked;
+  const status = document.getElementById('bnStatus');
+  const log = document.getElementById('bnLog');
+  if (!models.length) { status.textContent = '先选模型'; return; }
+  if (!prompt) { status.textContent = '提示词为空'; return; }
+
+  let key = '';
+  try { key = (await api('api/apikey')).key || ''; } catch (e) {}
+  benchAbort = false;
+  benchData = models.map(m => ({ model: m, ms: [], runs: 0, ok: 0 }));
+  if (log) log.innerHTML = '';
+  benchLog('开始 · ' + models.length + ' 模型 × ' + runs + ' 次 · stream=' + stream);
+  benchRender();
+
+  let done = 0;
+  const total = models.length * runs;
+  for (const row of benchData) {
+    for (let i = 0; i < runs; i++) {
+      if (benchAbort) break;
+      const t0 = performance.now();
+      try {
+        const r = await fetch('v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+          body: JSON.stringify({ model: row.model, messages: [{ role: 'user', content: prompt }], stream: stream }),
+        });
+        if (!r.ok) {
+          const txt = await r.text();
+          benchLog('✗ ' + row.model + ' #' + (i + 1) + ' HTTP ' + r.status + ' ' + txt.slice(0, 80), 'bad');
+          done++;
+          status.textContent = done + '/' + total;
+          continue;
+        }
+        if (stream) {
+          const reader = r.body.getReader();
+          while (!(await reader.read()).done) {}
+        } else {
+          await r.json();
+        }
+        const ms = performance.now() - t0;
+        row.ms.push(ms);
+        row.runs++;
+        row.ok++;
+        benchLog('✓ ' + row.model + ' #' + (i + 1) + ' ' + (ms / 1000).toFixed(1) + 's', 'ok');
+      } catch (e) {
+        benchLog('✗ ' + row.model + ' #' + (i + 1) + ' ' + (e.message || e), 'bad');
+      }
+      done++;
+      status.textContent = done + '/' + total;
+      benchRender();
+    }
+    if (benchAbort) break;
+  }
+  status.textContent = benchAbort ? '已停止 · ' + done + '/' + total : '完成 · ' + done + '/' + total;
+  benchRender();
+}
+
+function benchCopy() {
+  const payload = benchData.map(row => ({
+    model: row.model, runs: row.runs, ok: row.ok,
+    p50_ms: Math.round(benchStats(row.ms).p50),
+    min_ms: Math.round(benchStats(row.ms).min),
+    max_ms: Math.round(benchStats(row.ms).max),
+    avg_ms: Math.round(benchStats(row.ms).avg),
+  }));
+  navigator.clipboard.writeText(JSON.stringify(payload, null, 2)).then(() => {
+    const st = document.getElementById('bnStatus');
+    if (st) st.textContent = 'JSON 已复制';
+  });
+}
+
 function renderShell() {
   document.getElementById('app').innerHTML = `
     <header>
@@ -2872,6 +3087,18 @@ async function doLogin() {
 // I18N_EN 词典替换成英文；切回中文时从 ZH_ORIG 里恢复原文。渲染逻辑一行不用改，
 // 只在最外面套一层翻译。插值文案（带数字/名字的）不精确匹配、保持中文，属可接受。
 const I18N_EN = {
+  '基准测试': 'Benchmark',
+  '基准测试 · 同一提示词打多轮': 'Benchmark · same prompt, many rounds',
+  '每模型次数': 'Runs per model',
+  '开始': 'Start',
+  '停止': 'Stop',
+  '复制 JSON': 'Copy JSON',
+  '进度': 'Progress',
+  '中位': 'p50',
+  '最快': 'min',
+  '最慢': 'max',
+  '还没有跑过。': 'No runs yet.',
+
   '演练场': 'Playground',
   '演练场 · 发一条真实请求': 'Playground · send a real request',
   '临时 Token': 'Temporary token',
