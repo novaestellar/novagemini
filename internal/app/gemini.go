@@ -1517,7 +1517,7 @@ func isPreambleLine(line string) bool {
 	return true
 }
 
-// stallAfter adalah berapa lama tanpa byte baru sebelum upstream dianggap macet.
+// stallAfter() adalah berapa lama tanpa byte baru sebelum upstream dianggap macet.
 //
 // Harus di atas interval heartbeat Google (terukur 60 detik: frame
 // [{"37":[n]}] tiap ~60s selama model berpikir). Kalau di bawah itu, stream
@@ -1526,7 +1526,18 @@ func isPreambleLine(line string) bool {
 // Efeknya: request yang benar-benar macet berhenti di ~2 menit, bukan menunggu
 // batas total 720 detik. Klien menerima error yang bisa ditindaklanjuti jauh
 // lebih cepat, dan akun berikutnya bisa langsung dicoba.
-const stallAfter = 150 * time.Second
+func stallAfter() time.Duration {
+	// request_timeout_sec di config dipakai sebagai batas DIAM, bukan batas
+	// total. Model 3.7/3.8 bisa butuh 200-700 detik untuk menjawab, dan
+	// memotongnya di tengah jalan berarti membuang jawaban yang sedang jalan.
+	// Yang benar-benar merugikan adalah upstream yang berhenti mengirim apa
+	// pun: itu yang dipotong di sini.
+	sec := rtCfg().RequestTimeout
+	if sec < 60 {
+		sec = 60
+	}
+	return time.Duration(sec) * time.Second
+}
 
 // errUpstreamStall menandai pembacaan yang dihentikan karena upstream berhenti
 // mengirim data. Dibedakan dari timeout total supaya pemanggil tahu ini bukan
@@ -1545,7 +1556,7 @@ func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, in
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
 
-	// Pengawas: kalau tidak ada baris baru selama stallAfter, tutup body.
+	// Pengawas: kalau tidak ada baris baru selama stallAfter(), tutup body.
 	// Menutup body adalah satu-satunya cara membangunkan sc.Scan() yang sedang
 	// memblokir di read; errornya lalu terbaca sebagai stall.
 	stopWatch := make(chan struct{})
@@ -1559,7 +1570,7 @@ func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, in
 				return
 			case <-t.C:
 				idle := time.Duration(time.Now().UnixNano() - lastActivity.Load())
-				if idle > stallAfter {
+				if idle > stallAfter() {
 					stalled.Store(true)
 					_ = r.Close()
 					return
@@ -1592,7 +1603,7 @@ func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, in
 	}
 	if err := sc.Err(); err != nil {
 		if stalled.Load() {
-			return buf.Bytes(), ttfb, &errUpstreamStall{Idle: stallAfter}
+			return buf.Bytes(), ttfb, &errUpstreamStall{Idle: stallAfter()}
 		}
 		return buf.Bytes(), ttfb, err
 	}

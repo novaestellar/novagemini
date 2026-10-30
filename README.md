@@ -298,7 +298,7 @@ Google 一个浏览器配置最多 10 个账号（`/u/0` … `/u/9`）。novagem
 |---|---|---|
 | `retry_attempts` | 3 | 失败重试次数 |
 | `retry_delay_sec` | 2 | 重试间隔 |
-| `request_timeout_sec` | 180 | 单次请求上限 |
+| `request_timeout_sec` | 180 | 上游静默上限（不是总时长）。3.7/3.8 正常可能要 200-700 秒，所以这里只砍「停止发送数据」的请求 |
 | `per_ip_concurrent` | 5 | 单 IP 并发 |
 | `per_ip_rpm` | 30 | 单 IP 每分钟 |
 | `per_ip_rph` | 80 | 单 IP 每小时 |
