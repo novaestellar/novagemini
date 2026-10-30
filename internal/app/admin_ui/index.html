@@ -3,7 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NovaGemini</title>
+<title>novagemini</title>
+<link rel="icon" href="icon-64.png" sizes="64x64" type="image/png">
+<meta name="theme-color" content="#4A3A78">
+<script>
+/* Tema dipilih sebelum paint pertama supaya tidak ada kedipan terang. */
+(function () {
+  var t;
+  try { t = localStorage.getItem("theme"); } catch (e) {}
+  if (t !== "dark" && t !== "light") {
+    t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+  }
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
 <!-- Chart.js 随二进制一起 embed，不走 CDN：内网/离线部署也要能开面板 -->
 <script src="chart.umd.min.js"></script>
 <style>
@@ -356,7 +369,7 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
 #reqTable { table-layout: fixed; width: 100%; min-width: 0; }
 #reqTable th, #reqTable td { overflow: hidden; }
 #reqTable td.cell-endpoint { max-width: none; }
-  .table-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--card); }
+  /* header tabel: warna diatur di blok jembatan novaCF di bawah */
   .pager { display: flex; align-items: center; justify-content: space-between;
            gap: 12px; padding-top: 14px; margin-top: 4px; flex-wrap: wrap;
            font-size: 13px; border-top: 1px solid var(--outline-soft); }
@@ -477,6 +490,312 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
   }
+</style>
+<!-- Sistem visual novaCF: kertas hangat + lilac, Quicksand/Nunito, band gelap,
+     tab pil, panel bergaris rambut. Dimuat SETELAH gaya lama supaya komponen
+     yang sama (panel, tombol, tabel) mengikuti novaCF. -->
+<link rel="stylesheet" href="app.css">
+<style>
+  /* ── Jembatan: variabel lama -> palet novaCF ──────────────────────────────
+     Panel ini punya dua lapis gaya: lapisan lama (Material, biru Gemini) untuk
+     widget halaman, dan lapisan novaCF untuk rangka serta komponen umum.
+     Daripada menulis ulang 2000 baris JS, nama variabel lama dipetakan ke
+     token novaCF - semua widget ikut berubah warna tanpa disentuh. */
+  :root {
+    --bg: var(--paper);
+    --card: var(--surface);
+    --surface-hi: var(--surface-2);
+    --surface-press: var(--accent-soft);
+    --outline: var(--line-2);
+    --outline-soft: var(--line);
+    --text: var(--ink);
+    --text-2: var(--ink-2);
+    --muted: var(--ink-3);
+    --nav-on: var(--accent-soft);
+    --nav-on-fg: var(--accent-deep);
+    --ok: var(--sage);
+    --ok-bg: var(--sage-soft);
+    --fail: var(--coral);
+    --fail-bg: var(--coral-soft);
+    --warn: var(--honey);
+    --warn-bg: var(--honey-soft);
+    --shadow: var(--sh-1);
+    --sans: 'Nunito', 'Segoe UI', system-ui, sans-serif;
+    --display: 'Quicksand', 'Nunito', 'Segoe UI', sans-serif;
+    --mono: 'Cascadia Mono', ui-monospace, Consolas, monospace;
+  }
+  #app { display: block; min-height: 100vh; }
+  .content { display: block; min-width: 0; }
+  main#main { padding: 24px 28px; max-width: 1560px; margin: 0 auto; }
+  .page-title {
+    font-family: var(--display); font-size: 22px; font-weight: 700;
+    letter-spacing: -.3px; color: #fff; margin: 0;
+  }
+  /* Baris status di dalam .pills berubah jadi pil novaCF */
+  header .pills .sf-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 14px 7px 12px; border-radius: var(--r-pill);
+    background: #63499E; border: 1px solid rgba(255,255,255,.24);
+    font-size: 12.5px; color: #fff;
+  }
+  header .pills .sf-row b {
+    color: #fff; font-weight: 700; font-family: var(--mono); font-size: 12.5px;
+  }
+  header .pills .sf-sep { display: none; }
+  header .pills #healthText { color: #fff; font-size: 12.5px; }
+  .kpi-row {
+    display: grid; gap: 16px; margin-bottom: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  }
+  .kpi {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-lg); padding: 16px 19px; box-shadow: var(--sh-1);
+    transition: transform .18s var(--ease), box-shadow .18s var(--ease);
+  }
+  .kpi:hover { transform: translateY(-2px); box-shadow: var(--sh-2); }
+  .kpi .label {
+    font-size: 12.5px; color: var(--ink-3); font-weight: 600;
+    letter-spacing: .2px; margin-bottom: 6px;
+  }
+  .kpi .value {
+    font-family: var(--display); font-size: 26px; font-weight: 700;
+    color: var(--ink); line-height: 1.15;
+  }
+  .kpi .sub { font-size: 12.5px; color: var(--ink-3); margin-top: 4px; }
+  .panel > h2 {
+    display: flex; align-items: center; gap: 11px; flex-wrap: wrap;
+    margin: 0; padding: 12px 18px;
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    border-bottom: 1px solid var(--line);
+    font-family: var(--display); font-size: 14px; font-weight: 700;
+    color: var(--ink);
+  }
+  .panel > h2 .controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .grid-main { display: grid; grid-template-columns: 1fr; gap: 20px; }
+  .stack { display: flex; flex-direction: column; gap: 20px; }
+  .chart-wrap { height: 240px; padding: 8px 12px 14px; }
+  /* Daftar panjang menggulir di dalam panelnya sendiri, bukan menyeret seluruh
+     halaman. Angka mengikuti novaCF/novastar (.scroll 460px) supaya kepadatan
+     barisnya sama dengan panel acuan. */
+  .table-scroll { overflow: auto; max-height: 460px; border-top: 1px solid var(--line); }
+  .table-scroll.short { max-height: 300px; }
+  .table-scroll table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .table-scroll thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: linear-gradient(180deg, #FFFDF9, #FBF6EE);
+    color: var(--accent-deep);
+    font-family: var(--display); font-size: 11.5px; font-weight: 700;
+    letter-spacing: .2px; padding: 8px 12px; text-align: left;
+    white-space: nowrap; border-bottom: 1px solid var(--line-2);
+  }
+  .table-scroll tbody td {
+    padding: 6px 12px; border-bottom: 1px solid var(--line);
+    vertical-align: middle; line-height: 1.4;
+  }
+  .table-scroll tbody tr:nth-child(even) { background: rgba(46, 39, 51, .018); }
+  .table-scroll tbody tr:hover { background: var(--accent-tint); }
+  .table-scroll tbody tr:last-child td { border-bottom: none; }
+  /* Kolom panjang dipangkas, bukan melebarkan tabel: satu baris tetap satu tinggi. */
+  .table-scroll td.truncate, .table-scroll td.cell-endpoint, .table-scroll td.err {
+    max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .table-scroll td .mono, .table-scroll td.code { font-family: var(--mono); font-size: 11.5px; }
+  :root[data-theme='dark'] .panel > h2 {
+    background: linear-gradient(180deg, var(--surface-2), #241D30);
+  }
+  :root[data-theme='dark'] .table-scroll thead th {
+    background: linear-gradient(180deg, #2A2240, #241D36);
+    color: #CDBDF5;
+  }
+  :root[data-theme='dark'] .table-scroll tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, .022);
+  }
+
+  /* ── Pass visual (Operate) ────────────────────────────────────────────────
+     Skala tunggal untuk semua tabel, satu bentuk untuk semua tombol, dan
+     header yang punya berat. Angka diambil dari novaCF (td 9px/15px,
+     th 11px/15px) lalu dirapatkan satu tingkat karena tabel di sini punya
+     11-14 kolom, bukan 4.                                                            */
+
+  /* Tabel: 6px terbaca mepet, 9px sejajar acuan dan masih memuat 50 baris. */
+  .table-scroll { max-height: 520px; }
+  .table-scroll table { font-size: 13px; }
+  .table-scroll thead th {
+    padding: 10px 14px; font-size: 11.5px; letter-spacing: .2px;
+    border-bottom: 1px solid var(--line-2);
+  }
+  .table-scroll tbody td {
+    padding: 9px 14px; line-height: 1.45; font-size: 13px;
+  }
+  .table-scroll td.num, .table-scroll td.nw, .table-scroll th.nw { white-space: nowrap; }
+  .table-scroll td.truncate, .table-scroll td.cell-endpoint { max-width: 300px; }
+  .table-scroll td.pre.truncate { max-width: 360px; }
+  .table-scroll td .actions { display: flex; gap: 6px; flex-wrap: nowrap; }
+  /* Tabel yang sudah punya colgroup memakai layout tetap supaya kolom URL
+     tidak menyerobot lebar dan kolom aksi tidak terdorong keluar. */
+  .table-scroll table:has(> colgroup) { table-layout: fixed; }
+
+  /* Tombol: satu bentuk. Pill hanya untuk badge dan tab navigasi. */
+  .btn, .controls button, button.btn {
+    border-radius: 9px; padding: 7px 14px; font-size: 12.5px; font-weight: 600;
+    background: var(--surface); color: var(--ink-2);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+    transition: background .15s var(--ease), box-shadow .15s var(--ease), transform .12s var(--ease);
+  }
+  .btn:hover, .controls button:hover {
+    background: var(--surface-2);
+    box-shadow: inset 0 0 0 1px var(--line-2), var(--sh-1);
+  }
+  .btn:active, .controls button:active { transform: translateY(1px); }
+  .btn:focus-visible, .controls button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .btn.muted { background: var(--surface-2); color: var(--ink-2); font-weight: 600; }
+  .btn.danger {
+    background: transparent; color: var(--coral);
+    box-shadow: inset 0 0 0 1px var(--coral-soft);
+  }
+  .btn.danger:hover { background: var(--coral-soft); }
+  .actions .btn { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+  .icon-btn {
+    width: 30px; height: 30px; border-radius: 9px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .icon-btn:hover { background: var(--surface-2); }
+
+  /* Header galeri: baris berlabel, bukan teks lepas di atas grid. */
+  .gal-sec { margin-top: 30px; }
+  .gal-sec:first-child { margin-top: 0; }
+  .gal-kind {
+    display: flex; align-items: center; gap: 10px;
+    margin: 0 0 4px; padding: 0 0 10px;
+    border-bottom: 1px solid var(--line);
+    font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--ink);
+  }
+  .gal-kind .muted, .gal-day .muted {
+    font-family: var(--sans); font-size: 11.5px; font-weight: 600;
+    color: var(--accent-deep); background: var(--accent-soft);
+    border-radius: 999px; padding: 2px 8px; margin-left: 2px;
+  }
+  .gal-day {
+    display: flex; align-items: center; gap: 8px;
+    margin: 18px 0 10px; padding: 0;
+    font-size: 12px; font-weight: 700; letter-spacing: .4px;
+    color: var(--ink-3); text-transform: none;
+  }
+  .gal-grid { gap: 16px; grid-template-columns: repeat(auto-fill, minmax(208px, 1fr)); }
+  .gal-card {
+    border: 1px solid var(--line); border-radius: var(--r-lg);
+    box-shadow: none;
+    transition: transform .18s var(--ease), box-shadow .18s var(--ease), border-color .18s var(--ease);
+  }
+  .gal-card:hover {
+    transform: translateY(-2px); box-shadow: var(--sh-2); border-color: var(--line-2);
+  }
+  .gal-thumb { background: var(--paper-2); }
+  .gal-meta { padding: 10px 12px 12px; }
+  .gal-name { font-size: 12.5px; font-weight: 700; color: var(--ink);
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gal-sub { font-size: 11.5px; color: var(--ink-3); }
+
+  /* Halaman setting: grup jadi kartu, tiap baris punya garis rambut. */
+  .cfg-group {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-lg); padding: 0 20px 6px; margin-bottom: 18px;
+    box-shadow: var(--sh-1);
+  }
+  .cfg-group:last-of-type { margin-bottom: 0; }
+  .cfg-group > h3 {
+    margin: 0; padding: 14px 0 11px;
+    font-family: var(--display); font-size: 12px; font-weight: 700;
+    letter-spacing: .5px; color: var(--accent-deep);
+    border-bottom: 1px solid var(--line);
+  }
+  .cfg-grid { gap: 0; }
+  .cfg-item {
+    grid-template-columns: 200px minmax(0, 1fr);
+    padding: 11px 0; border-bottom: 1px solid var(--line);
+  }
+  .cfg-item:last-child { border-bottom: 0; }
+  .cfg-item > label {
+    padding-top: 9px; font-size: 12.5px; font-weight: 600; color: var(--ink-2);
+  }
+  .cfg-item > input[type=text], .cfg-item > input[type=number], .cfg-item > select {
+    height: 34px; max-width: 340px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--line-2);
+    padding: 6px 10px; font-size: 13px; color: var(--ink);
+  }
+  .cfg-item > input:focus, .cfg-item > select:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint);
+  }
+  .cfg-item .rthint { font-size: 11.5px; color: var(--ink-3); margin-top: 5px; max-width: 62ch; }
+
+  /* Blok penjelasan (<details class="note">) jadi catatan tenang, bukan kotak. */
+  .note { border: 0; background: transparent; padding: 0 19px 4px; }
+  .note > summary {
+    cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--ink-3);
+    padding: 10px 0; list-style: none;
+  }
+  .note > summary::-webkit-details-marker { display: none; }
+  .note > summary::before { content: "▸ "; color: var(--accent-deep); }
+  .note[open] > summary::before { content: "▾ "; }
+  .note > summary:hover { color: var(--ink-2); }
+  .note .body { font-size: 12.5px; line-height: 1.7; color: var(--ink-3); padding-bottom: 6px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: var(--r-pill);
+    font-size: 12px; font-weight: 600; font-family: var(--sans);
+    background: var(--accent-soft); color: var(--accent-deep);
+    border: 1px solid var(--accent-line);
+  }
+  .muted { color: var(--ink-3); }
+  .empty {
+    padding: 34px 19px; text-align: center; color: var(--ink-3);
+    font-family: var(--display); font-size: 14px;
+  }
+  .kv { display: grid; gap: 8px; padding: 16px 19px; }
+  .hint { padding: 0 19px 16px; color: var(--ink-3); font-size: 12.5px; line-height: 1.6; }
+  .hint code {
+    font-family: var(--mono); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px;
+  }
+  .gal-sec { margin-bottom: 20px; }
+  .gal-sec h3 {
+    font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--ink);
+    margin: 0 0 12px; padding: 0 2px;
+  }
+  .gal-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+  .gal-card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r); overflow: hidden; box-shadow: var(--sh-1);
+    transition: transform .18s var(--ease), box-shadow .18s var(--ease);
+  }
+  .gal-card:hover { transform: translateY(-2px); box-shadow: var(--sh-2); }
+  .gal-card img, .gal-card video { width: 100%; display: block; background: var(--surface-2); }
+  .gal-meta { padding: 10px 12px; font-size: 12.5px; color: var(--ink-3); }
+  .modal { background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-lg); box-shadow: var(--sh-3); }
+  .login-box {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r-lg); box-shadow: var(--sh-2); padding: 26px;
+  }
+  .login-box h1 { color: var(--ink); font-family: var(--display); }
+  footer {
+    display: flex; justify-content: space-between; gap: 16px;
+    padding: 14px 28px; color: var(--ink-3); font-size: 12.5px;
+    border-top: 1px solid var(--line); background: var(--surface-2);
+    flex-wrap: wrap;
+  }
+  footer #footLeft, footer #footRight { display: flex; align-items: center; gap: 10px; }
+  /* Tab aktif: novaCF mengandalkan indikator geser di app.js-nya; di sini
+     kelas .on langsung diisi warna supaya tetap terbaca tanpa skrip itu. */
+  nav#tabs button.on {
+    color: #fff;
+    background: var(--accent-deep);
+    border-color: var(--accent-deep);
+    box-shadow: var(--sh-1);
+  }
+  nav#tabs button.on:hover { color: #fff; transform: translateY(-1px); }
 </style>
 </head>
 <body>
@@ -1928,8 +2247,11 @@ async function switchPage(name, force = false) {
   // 深链/书签:把当前页写进 hash。用 replaceState,点导航不会塞满浏览器历史。
   try { history.replaceState(null, '', '#' + name); } catch (e) {}
 
-  document.querySelectorAll('nav button').forEach(b =>
-    b.classList.toggle('active', b.dataset.page === name));
+  document.querySelectorAll('nav button').forEach(b => {
+    const on = b.dataset.page === name;
+    b.classList.toggle('on', on);
+    b.classList.toggle('active', on);
+  });
   const titleEl = document.getElementById('pageTitle');
   if (titleEl) titleEl.textContent = PAGE_TITLES[name] || name;
   const main = document.getElementById('main');
@@ -2010,48 +2332,62 @@ function toggleSidebar() {
 }
 
 function renderShell() {
-  const collapsed = (() => { try { return localStorage.getItem('sbCollapsed') === '1'; } catch (e) { return false; } })();
   document.getElementById('app').innerHTML = `
-    <aside class="sidebar${collapsed ? ' collapsed' : ''}">
-      <div class="side-top">
-        <button class="icon-btn" onclick="toggleSidebar()" title="收起 / 展开" aria-label="收起或展开侧边栏">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">${ICONS.menu}</svg>
-        </button>
-        <span class="brand-text"><span class="spark"></span>NovaGemini</span>
-      </div>
-      <nav>
-        ${NAV.map(([k, label]) => `
-          <button data-page="${k}" onclick="switchPage('${k}')" title="${label}">
-            <svg viewBox="0 0 24 24">${ICONS[k]}</svg>
-            <span class="nav-label">${label}</span>
-          </button>`).join('')}
-      </nav>
-      <div class="side-foot">
-        <div id="sideStat"></div>
-        <div class="sf-sep"></div>
-        <button class="logout-btn" onclick="doLogout()" title="退出登录">
-          <svg viewBox="0 0 24 24">${ICONS.logout}</svg>
-          <span class="nav-label">退出登录</span>
-        </button>
-      </div>
-    </aside>
-    <div class="content">
-      <div class="topbar">
-        <h1 class="page-title" id="pageTitle">概览</h1>
-        <div class="topbar-right">
-          <button class="btn" id="langBtn" onclick="toggleLang()" style="padding:5px 10px;font-size:12px" title="切换语言 / Switch language">EN</button>
-          <span class="dot" id="healthDot"></span>
-          <span class="muted" id="healthText">运行中</span>
+    <header>
+      <div class="brand">
+        <div class="mark"><img src="icon-64.png" alt="" width="40" height="40"></div>
+        <div>
+          <h1>nova<span>gemini</span></h1>
+          <div class="sub" id="pageTitle">概览</div>
         </div>
       </div>
-      <main id="main"></main>
-    </div>
+      <div class="pills" id="sideStat"></div>
+      <button class="theme-btn" id="themeBtn" type="button" onclick="toggleTheme()"
+              title="Terang / gelap" aria-label="Ganti tema">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 109 9 7 7 0 01-9-9z"/></svg>
+      </button>
+    </header>
+
+    <nav id="tabs">
+      ${NAV.map(([k, label]) => `
+        <button data-page="${k}" onclick="switchPage('${k}')" title="${label}">${label}</button>`).join('')}
+    </nav>
+
+    <main id="main"></main>
+
+    <footer>
+      <span id="footLeft">
+        <button class="btn sm" id="langBtn" onclick="toggleLang()" style="padding:5px 10px;font-size:12px"
+                title="切换语言 / Switch language">EN</button>
+        <span class="mut" id="healthText">运行中</span>
+      </span>
+      <span id="footRight">
+        <button class="btn sm" onclick="doLogout()" title="退出登录">退出登录</button>
+      </span>
+    </footer>
   `;
   // 深链:/gallery 现在会 302 到这里并带上 #gallery,书签也走同一条路。
   // 只认 PAGE_TITLES 里有的键(hasOwnProperty,免得 #constructor 之类撞上原型链)。
   const hashPage = decodeURIComponent((location.hash || '').replace(/^#\/?/, ''));
   switchPage(Object.prototype.hasOwnProperty.call(PAGE_TITLES, hashPage) ? hashPage : 'dashboard');
   loadSideStat();
+  syncThemeBtn();
+}
+
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('theme', next); } catch (e) {}
+  syncThemeBtn();
+}
+
+function syncThemeBtn() {
+  const btn = document.getElementById('themeBtn');
+  if (!btn) return;
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  btn.classList.toggle('on', dark);
+  btn.setAttribute('aria-pressed', dark ? 'true' : 'false');
 }
 
 // 侧栏底部放真正有用的服务状态，而不是一个占位破折号

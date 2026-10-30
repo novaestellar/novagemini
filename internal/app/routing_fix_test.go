@@ -7,7 +7,7 @@ import (
 
 // Proxy yang dimatikan tidak boleh dianggap "ada proxy". Dulu pool berisi satu
 // proxy enabled=0 membuat setiap request masuk jalur proxy, gagal memilih, lalu
-// dilaporkan "rph limit reached" â€” padahal penghitungnya nol dan jalur langsung
+// dilaporkan "rph limit reached" — padahal penghitungnya nol dan jalur langsung
 // sehat. Gejalanya: 502 instan pada model berbayar.
 func TestAcquireSlotIgnoresDisabledProxy(t *testing.T) {
 	proxyMu.Lock()
@@ -81,7 +81,7 @@ func TestModelServedMatchesAcceptsUpgrade(t *testing.T) {
 	}
 }
 
-// Akun yang punya rollout 3.8 tidak boleh disaring dari permintaan 3.6 lagi â€”
+// Akun yang punya rollout 3.8 tidak boleh disaring dari permintaan 3.6 lagi —
 // itu yang membuat 3.6 dan 3.6-thinking mati di akun utama.
 func TestSupportsModelFlash36OnNewerAccount(t *testing.T) {
 	c := AccountCapability{

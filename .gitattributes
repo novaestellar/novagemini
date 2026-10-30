@@ -1,7 +1,8 @@
-# 统一换行符:仓库内一律 LF,Windows 可执行/脚本保持 CRLF
+# Normalisasi akhir baris: repo simpan LF, Windows checkout tetap LF
+# supaya skrip shell dan file .go tidak pernah bertabrakan.
 * text=auto eol=lf
 
-# Go 与文档
+# Sumber
 *.go   text eol=lf
 *.md   text eol=lf
 *.json text eol=lf
@@ -14,26 +15,20 @@
 *.svg  text eol=lf
 *.mod  text eol=lf
 *.sum  text eol=lf
+*.py   text eol=lf
 
-# Windows 脚本必须 CRLF,否则部分环境解析异常
+# Skrip Windows butuh CRLF agar cmd.exe dan PowerShell tidak salah baca
 *.ps1  text eol=crlf
 *.bat  text eol=crlf
-*.cmd  text eol=crlf
 
-# 二进制与产物:永不 diff、永不转换
-*.exe  binary
-*.db   binary
+# Biner: jangan pernah dinormalisasi
 *.png  binary
 *.jpg  binary
 *.jpeg binary
 *.gif  binary
 *.webp binary
 *.ico  binary
-*.pdf  binary
-*.zip  binary
-
-# 第三方压缩产物与生成物:不计语言统计、不进 diff
-internal/app/admin_ui/chart.umd.min.js linguist-generated=true -diff
-*.min.js  linguist-generated=true -diff
-*.min.css linguist-generated=true -diff
-*.lock    linguist-generated=true
+*.woff binary
+*.woff2 binary
+*.exe  binary
+*.db   binary

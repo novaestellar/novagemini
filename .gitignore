@@ -68,3 +68,9 @@ __pycache__/
 
 # Profil browser milik alat (berisi cookie sesi hidup - JANGAN masuk repo)
 browser/
+
+# ── rahasia & artefak lokal (jangan pernah masuk repo) ──
+.env.local    # kredensial lokal
+config.json.*    # salinan konfigurasi
+/data/    # database + media
+/browser/    # profil browser berisi cookie hidup
