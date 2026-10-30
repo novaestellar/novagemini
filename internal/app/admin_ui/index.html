@@ -974,6 +974,7 @@ const pages = {
       </div>
 
       <div class="grid-main">
+        <div class="stack">
         <div class="panel">
           <h2>请求量与延迟
             <span class="controls">
@@ -986,6 +987,24 @@ const pages = {
           </h2>
           <div class="chart-wrap"><canvas id="chartReq"></canvas></div>
         </div>
+
+        <div class="panel">
+          <h2>按出口分组</h2>
+          <table>
+            <colgroup><col style="width:46%"><col style="width:18%"><col style="width:18%"><col style="width:18%"></colgroup>
+            <thead><tr><th>出口</th><th class="nw">请求</th><th class="nw">成功</th><th class="nw">平均</th></tr></thead>
+            <tbody>${(stats.by_proxy || []).map(p => `
+              <tr><td class="truncate">${!p.proxy || p.proxy === '(direct)' ? '直连' : escapeHtml(p.proxy)}</td>
+                  <td class="num nw">${fmt.num(p.requests)}</td>
+                  <td class="num nw">${fmt.num(p.success)}</td>
+                  <td class="num nw">${fmt.ms(p.avg_ms)}</td></tr>`).join('')
+              || '<tr><td colspan="4" class="empty">暂无数据</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+        </div>
+
+
 
         <div class="stack">
         <div class="panel">
@@ -1052,6 +1071,13 @@ const pages = {
       </div>
 
       <div class="grid-2">
+
+
+      </div>
+
+
+
+      <div class="grid-2">
         <div class="panel">
           <h2>按模型分组</h2>
           <table>
@@ -1067,27 +1093,11 @@ const pages = {
             </tbody>
           </table>
         </div>
-        <div class="panel">
-          <h2>按出口分组</h2>
-          <table>
-            <colgroup><col style="width:46%"><col style="width:18%"><col style="width:18%"><col style="width:18%"></colgroup>
-            <thead><tr><th>出口</th><th class="nw">请求</th><th class="nw">成功</th><th class="nw">平均</th></tr></thead>
-            <tbody>${(stats.by_proxy || []).map(p => `
-              <tr><td class="truncate">${!p.proxy || p.proxy === '(direct)' ? '直连' : escapeHtml(p.proxy)}</td>
-                  <td class="num nw">${fmt.num(p.requests)}</td>
-                  <td class="num nw">${fmt.num(p.success)}</td>
-                  <td class="num nw">${fmt.ms(p.avg_ms)}</td></tr>`).join('')
-              || '<tr><td colspan="4" class="empty">暂无数据</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
       <div class="panel">
-        <h2>By account</h2>
+        <h2>按账号分组</h2>
         <table>
-          <colgroup><col style="width:34%"><col style="width:14%"><col style="width:14%"><col style="width:18%"><col style="width:20%"></colgroup>
-          <thead><tr><th>Account</th><th class="nw">Requests</th><th class="nw">Success</th><th class="nw">Avg</th><th class="nw">Token</th></tr></thead>
+          <colgroup><col style="width:46%"><col style="width:18%"><col style="width:18%"><col style="width:18%"></colgroup>
+          <thead><tr><th>Account</th><th class="nw">请求</th><th class="nw">成功</th><th class="nw">平均</th><th class="nw">Token</th></tr></thead>
           <tbody>${(stats.by_account || []).map(a => `
             <tr><td class="truncate" title="${escapeHtml(a.account)}">${
                   a.account === '(anonymous)' ? '<span class="badge muted">anonymous</span>' : escapeHtml(a.account)
@@ -1095,10 +1105,11 @@ const pages = {
                 <td class="num nw">${fmt.num(a.requests)}</td>
                 <td class="num nw">${fmt.num(a.success)}</td>
                 <td class="num nw">${fmt.ms(a.avg_ms)}</td>
-                <td class="num nw">${fmt.num((a.prompt_tokens||0) + (a.output_tokens||0))}</td></tr>`).join('')
+                </tr>`).join('')
             || '<tr><td colspan="5" class="empty">No data</td></tr>'}
           </tbody>
         </table>
+      </div>
       </div>
 
       <div class="panel">
