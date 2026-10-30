@@ -30,9 +30,17 @@ func TestFasterAccountPrefersLowerLatency(t *testing.T) {
 		t.Fatal("selisih 10% seharusnya tidak cukup untuk mengganti pilihan")
 	}
 
-	// Akun tanpa sampel memakai rata-rata papan, bukan 0 (yang akan selalu menang).
-	if !fasterAccount(3, 5) {
-		t.Fatal("akun 100s harus lebih cepat daripada akun tanpa sampel (rata-rata papan)")
+	// Akun tanpa sampel memakai rata-rata papan, bukan 0 (yang akan selalu
+	// menang) dan bukan pula +inf (yang tidak akan pernah dipilih).
+	// Papan saat ini: 200, 50, 100, 110 -> rata-rata 115 detik.
+	// 100s vs 115s hanya beda 15%, di bawah ambang 25% -> tidak mengganti.
+	if fasterAccount(3, 5) {
+		t.Fatal("selisih 15% terhadap rata-rata papan seharusnya belum cukup")
+	}
+	// Akun yang benar-benar cepat (40s) harus menang atas akun tanpa sampel.
+	noteLatency(6, 40_000)
+	if !fasterAccount(6, 5) {
+		t.Fatal("akun 40s harus menang atas akun tanpa sampel (rata-rata papan)")
 	}
 }
 
