@@ -133,7 +133,10 @@ novagemini v4.22.0
 |---|---|
 | `ADMIN_TOKEN` | 给面板加访问密码；不设则本机直接进 |
 | `API_KEY` | 固定 `/v1/*` 的 key；不设则自动生成 |
+| `ALT_PORTS` | 额外监听端口，逗号分隔；`none` 表示不监听 |
 | `SQL_DSN` | 换数据库，例如 `mysql://user:pass@host:3306/db`；不设则用 SQLite |
+
+以上是程序真正读取的全部环境变量（代码里逐个 `os.Getenv`）。监听地址与端口不在其中：用 `config.json` 的 `host` / `port`，或命令行 `--port`。`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 会被显式忽略——走系统代理会绕开 TLS 指纹，反而更容易被拦；出口代理请在面板「代理池」或 `--proxy` 设置。
 
 完整模板见 [`.env.example`](.env.example)。`.env` 不入库。
 
