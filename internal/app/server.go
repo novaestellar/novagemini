@@ -228,6 +228,9 @@ func recordRequest(endpoint, model, prompt, response string, res *StreamResult, 
 			r.AccountID = &res.AccountID
 		}
 		r.AccountLabel = res.AccountLabel
+		if status == 200 && res.AccountID > 0 && res.TotalMs > 0 {
+			noteLatency(res.AccountID, res.TotalMs)
+		}
 	}
 	go insertRequest(r)
 }

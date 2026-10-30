@@ -596,11 +596,13 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 			continue
 		}
 		c := a
+		// Rata-rata 1 jam per akun dipakai sebagai pemecah seri: yang jelas
+		// lebih cepat menang, yang praktis sama tetap ikut round-robin.
 		if probeForAccount(a.ID).Tier == "pro" {
-			if proChoice == nil {
+			if proChoice == nil || fasterAccount(a.ID, proChoice.ID) {
 				proChoice = &c
 			}
-		} else if fallbackChoice == nil {
+		} else if fallbackChoice == nil || fasterAccount(a.ID, fallbackChoice.ID) {
 			fallbackChoice = &c
 		}
 	}
