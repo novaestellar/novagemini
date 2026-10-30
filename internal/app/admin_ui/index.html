@@ -869,6 +869,28 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
   .pg-out img, .pg-out video { max-width: 100%; border-radius: var(--r); border: 1px solid var(--line); }
   .pg-out audio { width: 100%; }
   .pg-out pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+
+  /* Empat panel di atas dibuat benar-benar 2x2: dua kolom sama lebar, tiap
+     panel di dalam kolom berbagi tinggi yang sama (1.4 : 1), jadi garis
+     bawah kiri dan kanan bertemu di titik yang sama. */
+  .grid-main { grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: stretch; }
+  .grid-main > .stack { display: flex; flex-direction: column; gap: 14px; height: 100%; }
+  .grid-main > .stack > .panel { margin-bottom: 0; min-height: 0; }
+  .grid-main > .stack > .panel:nth-child(1) { flex: 1.4 1 0; display: flex; flex-direction: column; }
+  .grid-main > .stack > .panel:nth-child(2) { flex: 1 1 0; display: flex; flex-direction: column; }
+  .grid-main > .stack > .panel > .chart-wrap { flex: 1; height: auto; min-height: 150px; }
+  .grid-main > .stack > .panel > .slot-scroll { flex: 1; max-height: none; }
+
+  /* Playground */
+  .pg-opts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 6px; }
+  .pg-chk { display: flex; gap: 6px; align-items: center; margin: 0; padding: 0; font-weight: 400; }
+  .pg-steps { margin: 0; padding: 8px 19px 14px 38px; font-size: 12.5px; color: var(--ink-2); }
+  .pg-steps li { padding: 3px 0; line-height: 1.5; }
+  .pg-steps li.ok::marker { color: var(--sage); }
+  .pg-steps li.bad { color: var(--coral); }
+  .pg-code { margin: 0; padding: 14px 19px 18px; font-family: var(--mono);
+             font-size: 11.5px; line-height: 1.6; color: var(--ink-2);
+             white-space: pre-wrap; word-break: break-word; }
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 10px; border-radius: var(--r-pill);
@@ -1324,32 +1346,51 @@ const pages = {
   playground: async () => {
     return `
       <div class="grid-main">
-        <div class="panel">
-          <h2>演练场 · 发一条真实请求</h2>
-          <div class="pg-form">
-            <div class="cfg-item">
-              <label for="pgModel">模型</label>
-              <select id="pgModel"></select>
-            </div>
-            <div class="cfg-item">
-              <label for="pgPrompt">提示词</label>
-              <textarea id="pgPrompt" rows="4" placeholder="例如：一只坐在窗台上的橘猫，清晨侧光"></textarea>
-            </div>
-            <div class="cfg-item">
-              <label>选项</label>
-              <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding-top:6px">
-                <label style="display:flex;gap:6px;align-items:center;margin:0;padding:0;font-weight:400">
-                  <input type="checkbox" id="pgStream"> 流式
-                </label>
-                <button class="btn primary" id="pgRun" onclick="runPlayground()">发送</button>
-                <span class="mut" id="pgStatus"></span>
+        <div class="stack">
+          <div class="panel">
+            <h2>演练场 · 发一条真实请求
+              <span class="controls"><span class="mut" id="pgStatus"></span></span>
+            </h2>
+            <div class="pg-form">
+              <div class="cfg-item">
+                <label for="pgModel">模型</label>
+                <select id="pgModel"></select>
+              </div>
+              <div class="cfg-item">
+                <label for="pgToken">临时 Token</label>
+                <input type="text" id="pgToken" spellcheck="false" autocomplete="off"
+                       placeholder="sk-gemini-...">
+              </div>
+              <div class="cfg-item">
+                <label for="pgPrompt">提示词</label>
+                <textarea id="pgPrompt" rows="5" placeholder="例如：一只坐在窗台上的橘猫，清晨侧光"></textarea>
+              </div>
+              <div class="cfg-item">
+                <label>选项</label>
+                <div class="pg-opts">
+                  <label class="pg-chk"><input type="checkbox" id="pgStream" checked> 流式</label>
+                  <button class="btn primary" id="pgRun" onclick="runPlayground()">发送</button>
+                  <button class="btn" onclick="pgBuildCode()">生成代码</button>
+                </div>
               </div>
             </div>
           </div>
+          <div class="panel">
+            <h2>步骤</h2>
+            <ol class="pg-steps" id="pgSteps"></ol>
+          </div>
         </div>
-        <div class="panel">
-          <h2>结果</h2>
-          <div class="pg-out" id="pgOut"><div class="empty">还没有请求。</div></div>
+        <div class="stack">
+          <div class="panel">
+            <h2>结果</h2>
+            <div class="pg-out" id="pgOut"><div class="empty">还没有请求。</div></div>
+          </div>
+          <div class="panel">
+            <h2>等效代码
+              <span class="controls"><button class="btn" onclick="pgCopyCode()">复制</button></span>
+            </h2>
+            <pre class="pg-code" id="pgCode">按「生成代码」查看这一段请求的 curl / Python。</pre>
+          </div>
         </div>
       </div>`;
   },
@@ -2555,9 +2596,11 @@ async function initPlayground() {
   const sel = document.getElementById('pgModel');
   if (!sel || sel.dataset.ready === '1') return;
   let models = PG_MODELS;
+  let key = '';
   try {
     const k = await api('api/apikey');
-    const r = await fetch('v1/models', { headers: { Authorization: 'Bearer ' + (k.key || '') } });
+    key = k.key || '';
+    const r = await fetch('v1/models', { headers: { Authorization: 'Bearer ' + key } });
     if (r.ok) {
       const j = await r.json();
       const ids = (j.data || []).map(m => m.id);
@@ -2566,6 +2609,20 @@ async function initPlayground() {
   } catch (e) {}
   sel.innerHTML = models.map(m => '<option value="' + m + '">' + m + '</option>').join('');
   sel.dataset.ready = '1';
+  const tok = document.getElementById('pgToken');
+  if (tok && !tok.value) tok.value = key;
+  pgStep('准备就绪 · 模型 ' + models.length + ' 个');
+}
+
+function pgStep(text, cls) {
+  const box = document.getElementById('pgSteps');
+  if (!box) return;
+  const li = document.createElement('li');
+  const sec = ((performance.now() - (window.__pgT0 || performance.now())) / 1000).toFixed(2);
+  li.textContent = text + '  · ' + sec + 's';
+  if (cls) li.className = cls;
+  box.appendChild(li);
+  box.scrollTop = box.scrollHeight;
 }
 
 function pgRender(content, model) {
@@ -2589,24 +2646,70 @@ function pgRender(content, model) {
   out.innerHTML = '<pre>' + escapeHtml(text) + '</pre>';
 }
 
+function pgPayload() {
+  return {
+    model: document.getElementById('pgModel').value,
+    prompt: (document.getElementById('pgPrompt').value || '').trim(),
+    token: (document.getElementById('pgToken').value || '').trim(),
+    stream: document.getElementById('pgStream').checked,
+  };
+}
+
+function pgCodeText() {
+  const { model, prompt, token, stream } = pgPayload();
+  const body = JSON.stringify({ model: model, stream: stream,
+    messages: [{ role: 'user', content: prompt || '<prompt>' }] }, null, 2);
+  const base = location.origin + location.pathname.replace(/\/admin\/?.*$/, '') ;
+  const url = (base || location.origin) + '/v1/chat/completions';
+  return 'curl ' + url + ' \\\n' +
+    '  -H "Authorization: Bearer ' + (token || 'sk-gemini-...') + '" \\\n' +
+    '  -H "Content-Type: application/json" \\\n' +
+    "  -d '" + body.replace(/\n/g, '\n  ') + "'\n\n" +
+    'from openai import OpenAI\n' +
+    'client = OpenAI(base_url="' + (base || location.origin) + '/v1", api_key="' + (token || 'sk-gemini-...') + '")\n' +
+    'resp = client.chat.completions.create(\n' +
+    '    model="' + model + '", stream=' + (stream ? 'True' : 'False') + ',\n' +
+    "    messages=[{'role': 'user', 'content': " + JSON.stringify(prompt || '<prompt>') + "}],\n" +
+    ')\n';
+}
+
+function pgBuildCode() {
+  const box = document.getElementById('pgCode');
+  if (box) box.textContent = pgCodeText();
+}
+
+async function pgCopyCode() {
+  const box = document.getElementById('pgCode');
+  const status = document.getElementById('pgStatus');
+  if (!box) return;
+  try {
+    await navigator.clipboard.writeText(box.textContent || '');
+    if (status) status.textContent = '已复制';
+  } catch (e) {
+    if (status) status.textContent = '复制失败';
+  }
+}
+
 async function runPlayground() {
-  const model = document.getElementById('pgModel').value;
-  const prompt = (document.getElementById('pgPrompt').value || '').trim();
+  const { model, prompt, token, stream } = pgPayload();
   const status = document.getElementById('pgStatus');
   const out = document.getElementById('pgOut');
-  const stream = document.getElementById('pgStream').checked;
+  const steps = document.getElementById('pgSteps');
+  if (steps) steps.innerHTML = '';
   if (!prompt) { status.textContent = '提示词为空'; return; }
-  let key = '';
-  try { key = (await api('api/apikey')).key || ''; } catch (e) {}
+  window.__pgT0 = performance.now();
+  pgStep('① 组装请求 · model=' + model + ' stream=' + stream);
+  pgBuildCode();
   status.textContent = '发送中…';
   out.innerHTML = '<div class="empty">等待上游…</div>';
-  const t0 = performance.now();
   try {
+    pgStep('② 已发送，等待响应头');
     const r = await fetch('v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
       body: JSON.stringify({ model: model, messages: [{ role: 'user', content: prompt }], stream: stream }),
     });
+    pgStep('③ HTTP ' + r.status + ' 返回', r.ok ? 'ok' : 'bad');
     if (!r.ok) {
       const err = await r.text();
       out.innerHTML = '<pre>' + escapeHtml(err.slice(0, 2000)) + '</pre>';
@@ -2616,7 +2719,7 @@ async function runPlayground() {
     if (stream) {
       const reader = r.body.getReader();
       const dec = new TextDecoder();
-      let buf = '', acc = '';
+      let buf = '', acc = '', first = true;
       out.innerHTML = '<pre id="pgStreamOut"></pre>';
       const el = document.getElementById('pgStreamOut');
       for (;;) {
@@ -2632,19 +2735,25 @@ async function runPlayground() {
           try {
             const j = JSON.parse(payload);
             const d = (j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content) || '';
-            if (d) { acc += d; el.textContent = acc; }
+            if (d) {
+              if (first) { first = false; pgStep('④ 首个内容块到达', 'ok'); }
+              acc += d; el.textContent = acc;
+            }
           } catch (e) {}
         }
       }
-      status.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's · ' + acc.length + ' 字符';
+      pgStep('⑤ 流结束 · ' + acc.length + ' 字符', 'ok');
+      status.textContent = ((performance.now() - window.__pgT0) / 1000).toFixed(1) + 's';
       if (/image|music|video|canvas/.test(model)) pgRender(acc, model);
       return;
     }
     const j = await r.json();
     const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
-    status.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's · 上游 ' + (j.model || model);
+    pgStep('④ 完整响应 · 上游 ' + (j.model || model), 'ok');
+    status.textContent = ((performance.now() - window.__pgT0) / 1000).toFixed(1) + 's';
     pgRender(content, model);
   } catch (e) {
+    pgStep('✗ 失败: ' + (e.message || e), 'bad');
     out.innerHTML = '<pre>' + escapeHtml(e.message || String(e)) + '</pre>';
     status.textContent = '失败';
   }
@@ -2763,6 +2872,24 @@ async function doLogin() {
 // I18N_EN 词典替换成英文；切回中文时从 ZH_ORIG 里恢复原文。渲染逻辑一行不用改，
 // 只在最外面套一层翻译。插值文案（带数字/名字的）不精确匹配、保持中文，属可接受。
 const I18N_EN = {
+  '演练场': 'Playground',
+  '演练场 · 发一条真实请求': 'Playground · send a real request',
+  '临时 Token': 'Temporary token',
+  '提示词': 'Prompt',
+  '选项': 'Options',
+  '流式': 'Stream',
+  '发送': 'Send',
+  '生成代码': 'Generate code',
+  '步骤': 'Steps',
+  '等效代码': 'Equivalent code',
+  '等待上游…': 'Waiting for upstream…',
+  '发送中…': 'Sending…',
+  '还没有请求。': 'No request yet.',
+  '账号延迟榜 · 1 小时': 'Account latency · 1 hour',
+  '载入中…': 'Loading…',
+  '暂无样本 · 每个账号成功响应几次后才会出现': 'No samples yet — appears after a few successful responses per account',
+  '按账号分组': 'By account',
+
   '名称 *': 'Name *',
   '代理 URL *': 'Proxy URL *',
   '未知错误': 'Unknown error',
