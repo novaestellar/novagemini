@@ -873,13 +873,16 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
   /* Empat panel di atas dibuat benar-benar 2x2: dua kolom sama lebar, tiap
      panel di dalam kolom berbagi tinggi yang sama (1.4 : 1), jadi garis
      bawah kiri dan kanan bertemu di titik yang sama. */
-  .grid-main { grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: stretch; }
-  .grid-main > .stack { display: flex; flex-direction: column; gap: 14px; height: 100%; }
-  .grid-main > .stack > .panel { margin-bottom: 0; min-height: 0; }
-  .grid-main > .stack > .panel:nth-child(1) { flex: 1.4 1 0; display: flex; flex-direction: column; }
-  .grid-main > .stack > .panel:nth-child(2) { flex: 1 1 0; display: flex; flex-direction: column; }
-  .grid-main > .stack > .panel > .chart-wrap { flex: 1; height: auto; min-height: 150px; }
-  .grid-main > .stack > .panel > .slot-scroll { flex: 1; max-height: none; }
+  /* Empat panel dashboard dibuat seimbang TANPA flex paksa. Aturan flex
+     sebelumnya berlaku global dan merusak halaman lain yang juga memakai
+     .grid-main (playground, benchmark, settings): panel jadi display:flex
+     dengan rasio tinggi tetap, sehingga form dan textarea-nya rusak.
+     Sekarang kelas .dash yang membatasi, dan tinggi panel mengikuti isinya. */
+  .grid-main.dash { grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: start; }
+  .grid-main.dash > .stack { gap: 14px; }
+  .grid-main.dash .chart-wrap { height: 210px; }
+  .grid-main.dash .slot-scroll { max-height: 210px; }
+  .grid-main.dash .table-scroll { max-height: 210px; }
 
   /* Playground */
   .pg-opts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 6px; }
@@ -998,7 +1001,7 @@ const pages = {
         <div class="score-list" id="scoreList"><div class="empty">载入中…</div></div>
       </div>
 
-      <div class="grid-main">
+      <div class="grid-main dash">
         <div class="stack">
         <div class="panel">
           <h2>请求量与延迟
