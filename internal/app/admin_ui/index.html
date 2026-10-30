@@ -491,9 +491,9 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
     * { transition: none !important; animation: none !important; }
   }
 </style>
-<!-- Sistem visual novaCF: kertas hangat + lilac, Quicksand/Nunito, band gelap,
-     tab pil, panel bergaris rambut. Dimuat SETELAH gaya lama supaya komponen
-     yang sama (panel, tombol, tabel) mengikuti novaCF. -->
+<!-- novaCF visual system: warm paper + lilac, Quicksand/Nunito, dark band,
+     pill tabs, hairline panels. Loaded AFTER the legacy layer so shared
+     components (panels, buttons, tables) follow novaCF. -->
 <link rel="stylesheet" href="app.css">
 <style>
   /* ── Jembatan: variabel lama -> palet novaCF ──────────────────────────────
@@ -3014,7 +3014,7 @@ function renderShell() {
         <button type="button" data-lang="en" onclick="setLang('en')">EN</button>
       </div>
       <button class="theme-btn" id="themeBtn" type="button" onclick="toggleTheme()"
-              title="Terang / gelap" aria-label="Ganti tema">
+              title="Light / dark" aria-label="Toggle theme">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 109 9 7 7 0 01-9-9z"/></svg>
       </button>
     </header>
