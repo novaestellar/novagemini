@@ -741,6 +741,39 @@ td.cell-endpoint .err { display: inline-block; margin-top: 3px; padding: 1px 6px
   .note[open] > summary::before { content: "▾ "; }
   .note > summary:hover { color: var(--ink-2); }
   .note .body { font-size: 12.5px; line-height: 1.7; color: var(--ink-3); padding-bottom: 6px; }
+
+  /* ── Tabel tidak boleh melebar keluar panel ─────────────────────────────
+     Dua penyebab sisa setelah pass sebelumnya:
+       1. lebar piksel di colgroup membuat total > lebar panel, sehingga kolom
+          aksi terdorong keluar dan tidak terjangkau scroll;
+       2. sel berisi teks panjang (URL, cookie, pesan error) mendorong kolom
+          walau colgroup sudah ada.
+     Solusi: persen + table-layout tetap + sel tidak boleh melimpah. */
+  .panel, .stack, .grid-main, .table-scroll, .content { min-width: 0; }
+  .table-scroll { overflow: auto; }
+  .table-scroll table { table-layout: fixed; width: 100%; }
+  .table-scroll th, .table-scroll td {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .table-scroll td.pre, .table-scroll td .pre {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal;
+  }
+  .table-scroll .badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .table-scroll td .actions { gap: 4px; }
+  .actions .btn { padding: 4px 8px; font-size: 11.5px; }
+
+  /* ── Overview dipadatkan: satu layar, bukan tiga ─────────────────────── */
+  .kpi-row { gap: 12px; margin-bottom: 14px; }
+  .kpi { padding: 13px 16px; }
+  .kpi .value { font-size: 22px; }
+  .kpi .label { margin-bottom: 4px; }
+  .chart-wrap { height: 180px; padding: 6px 10px 10px; }
+  .grid-main { gap: 14px; }
+  .stack { gap: 14px; }
+  @media (min-width: 1180px) {
+    .grid-main { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); align-items: start; }
+  }
+  .slot-scroll { max-height: 210px; }
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 3px 10px; border-radius: var(--r-pill);
@@ -1007,10 +1040,10 @@ const pages = {
         <div class="table-scroll">
           <table id="reqTable">
             <colgroup>
-              <col style="width:120px"><col style="width:132px"><col style="width:112px">
-              <col style="width:72px"><col style="width:64px"><col style="width:64px">
-              <col style="width:68px"><col style="width:68px"><col style="width:48px">
-              <col style="width:48px"><col style="width:auto">
+              <col style="width:9%"><col style="width:10%"><col style="width:10%">
+              <col style="width:6%"><col style="width:7%"><col style="width:5%">
+              <col style="width:5%"><col style="width:6%"><col style="width:4%">
+              <col style="width:4%"><col style="width:34%">
             </colgroup>
             <thead><tr>
               <th class="nw">时间</th><th class="nw">模型</th><th class="nw">实际模型</th>
@@ -1048,9 +1081,9 @@ const pages = {
         <div class="table-scroll">
           <table>
             <colgroup>
-              <col style="width:56px"><col style="width:150px"><col>
-              <col style="width:88px"><col style="width:80px"><col style="width:200px">
-              <col style="width:186px">
+              <col style="width:4%"><col style="width:13%"><col style="width:30%">
+              <col style="width:8%"><col style="width:6%"><col style="width:25%">
+              <col style="width:14%">
             </colgroup>
             <thead><tr>
               <th class="nw">ID</th><th class="nw">名称</th><th>代理 URL</th><th class="nw">状态</th>
@@ -1107,9 +1140,9 @@ const pages = {
         <div class="table-scroll">
           <table>
             <colgroup>
-              <col style="width:48px"><col style="width:160px"><col style="width:80px">
-              <col style="width:150px"><col style="width:92px"><col style="width:64px">
-              <col style="width:150px"><col><col style="width:150px">
+              <col style="width:4%"><col style="width:15%"><col style="width:7%">
+              <col style="width:16%"><col style="width:10%"><col style="width:6%">
+              <col style="width:11%"><col style="width:21%"><col style="width:10%">
             </colgroup>
             <thead><tr>
               <th class="nw">ID</th><th class="nw">标签</th><th class="nw">状态</th>
