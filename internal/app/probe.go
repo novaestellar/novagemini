@@ -33,10 +33,10 @@ type AccountCapability struct {
 	AccountID  int64    `json:"account_id"`
 	Label      string   `json:"label"`
 	Alive      bool     `json:"alive"`
-	Tier       string   `json:"tier"`     // "pro" | "free" | "unknown"
-	Caps       []string `json:"caps"`     // capability mentah dari Google
-	Rollouts   []string `json:"rollouts"` // nama rollout model (Argon4p0, Flash3p8, ...)
-	Features   []string `json:"features"` // nama model yang terlihat (Veo 3.1, Nano Banana 2, ...)
+	Tier       string   `json:"tier"`        // "pro" | "free" | "unknown"
+	Caps       []string `json:"caps"`        // capability mentah dari Google
+	Rollouts   []string `json:"rollouts"`    // nama rollout model (Argon4p0, Flash3p8, ...)
+	Features   []string `json:"features"`    // nama model yang terlihat (Veo 3.1, Nano Banana 2, ...)
 	QuotaImage int      `json:"quota_image"` // -1 = tidak diketahui
 	QuotaMusic int      `json:"quota_music"`
 	QuotaThink int      `json:"quota_think"`
@@ -82,6 +82,7 @@ func probeAccount(a CookieAccount) AccountCapability {
 		currentBL(proxyURL), reqid)
 
 	headers := buildGeminiHeaders(a.Cookie, extractSAPISID(a.Cookie), "")
+	endpoint = geminiURLWithAuthUser(endpoint, a.Cookie)
 	delete(headers, "x-goog-ext-525001261-jspb")
 
 	status, _, body, perr := uploadPost(endpoint, headers, []byte(form.Encode()), proxyURL)
@@ -129,6 +130,31 @@ func probeAccount(a CookieAccount) AccountCapability {
 	}
 	if out.Tier == "unknown" && out.Alive {
 		out.Tier = "free"
+	}
+	// Sumber kedua yang lebih jujur: daftar model akun (otAQ7b). Akun berbayar
+	// menerima model Argon; akun gratis tidak. ESY5D saja tidak cukup — tiga akun
+	// Pro operator dilaporkan tanpa cap berbayar, dan daftar model-lah yang
+	// membuktikan sebaliknya.
+	if out.Alive {
+		if pro, n, err := accountProModels(a, xsrf, proxyURL); err == nil {
+			if pro {
+				out.Tier = "pro"
+			} else if out.Tier == "pro" {
+				// ESY5D bilang pro tapi daftar model tidak memuat Argon: percayai
+				// daftar model, karena itu daftar yang benar-benar bisa dipakai.
+				out.Tier = "free"
+			}
+			logf("[probe] %s: %d model, tier=%s", accountDisplayName(&a), n, out.Tier)
+		}
+	}
+	// Penetapan operator menang atas tebakan probe.
+	// Payload ESY5D tidak selalu mencantumkan cap berbayar walau langganannya
+	// aktif (terukur: tiga akun Pro milik operator dilaporkan hanya
+	// JASMINE/EXTENSIONS). Probe hanya bisa membaca apa yang dikirim Google,
+	// sedangkan tagihan langganan diketahui operator — jadi nilai manual
+	// disimpan dan dipakai untuk routing.
+	if ov := strings.TrimSpace(a.TierOverride); ov == "pro" || ov == "free" {
+		out.Tier = ov
 	}
 
 	// Video tidak punya entri _soft; kalau akun punya VIDEO_GENERATION
@@ -348,6 +374,12 @@ func (c AccountCapability) supportsModel(mc ModelConfig) bool {
 	case toolImage:
 		return hasCap("IMAGEN_4") || c.QuotaImage != 0
 	case toolMusic:
+		// Kuota musik dipakai sebagai izin percobaan, BUKAN bukti kemampuan:
+		// akun nova-ff2 melaporkan quota_music=4 tanpa cap MUSIC di daftar probe,
+		// dan Google menjawab "3.8 Flash". Tapi web akun yang sama masih bisa
+		// membuat musik, jadi cap yang tidak tercantum TIDAK boleh dipakai untuk
+		// memblokir — probe bisa terpotong, dan memblokir akun yang sebenarnya
+		// mampu jauh lebih mahal daripada satu percobaan yang gagal cepat.
 		return c.QuotaMusic != 0
 	case toolCanvas:
 		return hasCap("CANVAS") || c.Tier == "pro" || len(c.Caps) == 0
@@ -372,17 +404,18 @@ func (c AccountCapability) supportsModel(mc ModelConfig) bool {
 		// Flash3p8, jadi tetap tersaring (dan memang hanya menyajikan 3.6).
 		return hasRollout("Flash3p8") || hasRollout("Flash3p7") || hasRollout("Argon4p0")
 	case hexFlash36:
-		// 3.6 punya jebakan sendiri: akun yang JUGA punya rollout Flash3p8
-		// akan menyajikan 3.8 saat diminta 3.6 (Google menaikkan, bukan
-		// menurunkan). Uji langsung: hex 3.6 + think 2 di nova-ff2 -> "3.8
-		// Flash High"; di acc1 (tanpa Flash3p8) -> "3.6 Flash".
-		// Jadi syaratnya bukan cuma "punya Flash3p6", tapi juga "tidak punya
-		// Flash3p8/Flash3p7" — kalau tidak, request 3.6 mendarat di akun yang
-		// pasti menjawab 3.8 dan deteksi downgrade menolaknya.
-		if hasRollout("Flash3p8") || hasRollout("Flash3p7") {
-			return false
-		}
-		return hasRollout("Flash3p6") || hasRollout(hexFlash36) || len(c.Rollouts) == 0
+		// 3.6 punya jebakan sendiri: akun yang JUGA punya rollout Flash3p8 akan
+		// menyajikan 3.8 saat diminta 3.6 (Google menaikkan, bukan menurunkan).
+		//
+		// Dulu akun seperti itu justru DISARING dari 3.6 supaya tidak kena
+		// penolakan. Akibatnya 3.6 (dan varian thinking-nya) mati sama sekali di
+		// akun utama yang punya 3.8 — "needs a signed-in PAID account" padahal
+		// akunnya pro. Sekarang 3.8/3.7 diterima karena lebih tinggi dari 3.6;
+		// yang ditolak hanya yang lebih rendah (3.5 Flash-Lite), dan itu dijaga
+		// di modelServedMatches.
+		return hasRollout("Flash3p6") || hasRollout(hexFlash36) ||
+			hasRollout("Flash3p8") || hasRollout("Flash3p7") ||
+			hasRollout("Argon4p0") || len(c.Rollouts) == 0
 	}
 	return true
 }
@@ -394,12 +427,58 @@ func probeAllAccounts() map[int64]AccountCapability {
 
 	out := map[int64]AccountCapability{}
 	for _, a := range accountList() {
-		c := probeAccount(a)
+		c := mergeProbeWithPrevious(probeAccount(a), probeCache[a.ID])
 		out[a.ID] = c
 		saveProbeResult(c)
 	}
 	probeCache = out
 	return out
+}
+
+// mergeProbeWithPrevious menjaga pengetahuan lama saat probe gagal.
+//
+// Dua kasus, dan keduanya pernah merusak routing tanpa gejala:
+//
+//  1. Gagal karena jalur keluar (proxy mati, DNS, timeout). Dulu hasilnya
+//     ditulis apa adanya: alive=0, tier="", caps kosong untuk SEMUA akun.
+//     Akibatnya aturan "pro dulu" mati total dan model berbayar jatuh ke
+//     anonim — padahal cookie-nya sehat dan request biasa jalan.
+//  2. Gagal karena sesi memang mati. alive=false itu benar, tapi tier dan caps
+//     terakhir tetap berguna: begitu cookie diperbarui, routing langsung tahu
+//     akun ini pro tanpa menunggu probe berikutnya.
+func mergeProbeWithPrevious(cur, prev AccountCapability) AccountCapability {
+	if prev.AccountID == 0 {
+		return cur
+	}
+	if isTransportError(cur.Err) {
+		// Bukan salah sesi: pertahankan seluruh hasil terakhir, cukup perbarui
+		// keterangan errornya supaya panel tetap jujur.
+		prev.Err = cur.Err
+		prev.CheckedAt = cur.CheckedAt
+		return prev
+	}
+	if cur.Tier == "" && prev.Tier != "" {
+		cur.Tier = prev.Tier
+	}
+	if len(cur.Caps) == 0 && len(prev.Caps) > 0 {
+		cur.Caps = prev.Caps
+	}
+	if len(cur.Rollouts) == 0 && len(prev.Rollouts) > 0 {
+		cur.Rollouts = prev.Rollouts
+	}
+	if cur.QuotaImage < 0 && prev.QuotaImage >= 0 {
+		cur.QuotaImage = prev.QuotaImage
+	}
+	if cur.QuotaMusic < 0 && prev.QuotaMusic >= 0 {
+		cur.QuotaMusic = prev.QuotaMusic
+	}
+	if cur.QuotaThink < 0 && prev.QuotaThink >= 0 {
+		cur.QuotaThink = prev.QuotaThink
+	}
+	if cur.QuotaVideo < 0 && prev.QuotaVideo >= 0 {
+		cur.QuotaVideo = prev.QuotaVideo
+	}
+	return cur
 }
 
 // probeSnapshot mengembalikan hasil probe terakhir tanpa memanggil Google.

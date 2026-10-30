@@ -65,3 +65,6 @@ internal/app/testdata/search_raw.txt
 # Python scratch (tidak untuk repo)
 __pycache__/
 *.pyc
+
+# Profil browser milik alat (berisi cookie sesi hidup - JANGAN masuk repo)
+browser/

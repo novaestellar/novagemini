@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // sseWriter 把 chat.completion.chunk 按 OpenAI 规范的顺序写出去：
@@ -18,6 +19,12 @@ type sseWriter struct {
 	created int64
 	model   string
 	started bool
+
+	// held menahan potongan awal stream. Penolakan generik Google ("I seem to
+	// be encountering an error...") hanya puluhan karakter dan datang sebagai
+	// jawaban biasa di jalur stream; tanpa ditahan, teks itu terkirim sebagai
+	// konten dan klien mengira model menjawab begitu.
+	held strings.Builder
 }
 
 func newSSEWriter(w http.ResponseWriter, id string, created int64, model string) *sseWriter {
@@ -77,12 +84,44 @@ func (s *sseWriter) SendReasoning(delta string) {
 	s.chunk(map[string]interface{}{"reasoning_content": delta}, nil, nil)
 }
 
+// heldContentLimit: berapa karakter awal yang ditahan sebelum dikirim.
+//
+// Cukup untuk membedakan penolakan generik (puluhan karakter) dari jawaban
+// sungguhan, tanpa menunda jawaban panjang secara berarti: begitu 160 karakter
+// terkumpul atau ada baris baru, buffer langsung dikirim.
+const heldContentLimit = 160
+
 func (s *sseWriter) SendContent(delta string) {
 	if delta == "" {
 		return
 	}
 	s.start()
-	s.chunk(map[string]interface{}{"content": delta}, nil, nil)
+	s.held.WriteString(delta)
+	if s.held.Len() >= heldContentLimit || strings.Contains(s.held.String(), "\n") {
+		s.flushHeld()
+	}
+}
+
+// flushHeld mengirim isi buffer tahanan sebagai satu chunk.
+func (s *sseWriter) flushHeld() {
+	if s.held.Len() == 0 {
+		return
+	}
+	txt := s.held.String()
+	s.held.Reset()
+	s.chunk(map[string]interface{}{"content": txt}, nil, nil)
+}
+
+// Settle dipanggil tepat sebelum stream ditutup. Kalau seluruh teks ternyata
+// penolakan generik, kembalikan error supaya pemanggil mengirim chunk error
+// alih-alih menyajikan penolakan Google sebagai jawaban model.
+func (s *sseWriter) Settle(fullText string) error {
+	if cannedRefusal(fullText) {
+		return fmt.Errorf("upstream returned a canned refusal instead of an answer; " +
+			"this is transient on Google's side, not a quota or access problem")
+	}
+	s.flushHeld()
+	return nil
 }
 
 func (s *sseWriter) SendToolCalls(tcs []ToolCall) {

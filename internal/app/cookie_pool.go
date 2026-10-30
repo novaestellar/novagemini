@@ -24,6 +24,22 @@ type CookieAccount struct {
 	LastError  string `json:"last_error"`
 	FailCount  int64  `json:"fail_count"`
 	ProxyID    int64  `json:"proxy_id"` // 绑定的出口，0 = 还没绑
+
+	// RotateDisabled 标记会话归浏览器所有。rotateAllAccounts 会跳过它：
+	// 两个客户端同时刷新 __Secure-1PSIDTS 会互相作废旧 token，症状就是
+	// "no SNlM0e" —— 健康的账号看起来像死了。这类账号的 cookie 由
+	// cookie_grab sync 定期覆盖，不由本服务续期。
+	RotateDisabled int64 `json:"rotate_disabled"`
+
+	// AuthUser 是同一个浏览器 profile 里 Google 多账号登录的序号，0 = 主账号。
+	// Satu profil bisa memegang belasan akun dengan SATU set cookie; yang
+	// membedakan hanya nilai ini, yang dikirim sebagai `authuser` di URL dan
+	// `X-Goog-AuthUser` di header. Tanpa ini semua akun dari profil yang sama
+	// akan dilayani sebagai akun indeks 0.
+	AuthUser int64 `json:"auth_user"`
+
+	// TierOverride: "pro"/"free" yang ditetapkan operator. Kosong = ikut probe.
+	TierOverride string `json:"tier_override"`
 }
 
 // splitCookiePairs 把 "k=v; k=v" 拆成键值对。
@@ -135,7 +151,7 @@ func accountInsert(label, cookie, note string) (int64, error) {
 // accountList 返回池里全部账号，按 id 升序。
 func accountList() []CookieAccount {
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override
 		 FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil
@@ -145,7 +161,8 @@ func accountList() []CookieAccount {
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
-			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID); err != nil {
+			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount,
+			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride); err != nil {
 			continue
 		}
 		out = append(out, a)
@@ -160,10 +177,11 @@ func accountList() []CookieAccount {
 func accountByID(id int64) *CookieAccount {
 	var a CookieAccount
 	err := getDB().QueryRow(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override
 		 FROM accounts WHERE id=?`, id).
 		Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
-			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID)
+			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount,
+			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride)
 	if err != nil {
 		return nil
 	}
@@ -189,6 +207,58 @@ func accountSetStatus(id int64, status string) error {
 func accountUpdateMeta(id int64, label, note string) error {
 	_, err := getDB().Exec(`UPDATE accounts SET label=?, note=? WHERE id=?`,
 		strings.TrimSpace(label), strings.TrimSpace(note), id)
+	return err
+}
+
+// accountSetCookie menimpa cookie sebuah akun dengan sesi yang baru diekspor.
+//
+// Dipakai alat sync: browser pemilik sesi, NovaGemini hanya memakai salinan
+// terbarunya. Status ikut dipulihkan dan fail_count dinolkan — cookie baru
+// adalah bukti hidup yang lebih kuat daripada hitungan kegagalan lama, dan
+// tanpa reset akun akan tetap tersaring walaupun sesinya sehat.
+//
+// last_ok_at sengaja TIDAK diisi: nilai itu berarti "permintaan nyata berhasil",
+// bukan "cookie baru dipasang".
+func accountSetCookie(id int64, cookie string) error {
+	c, ok := normalizeCookie(cookie, "sync dari browser")
+	if !ok {
+		return fmt.Errorf("cookie tidak bisa diparse")
+	}
+	if extractSAPISID(c) == "" {
+		return fmt.Errorf("cookie tanpa SAPISID — tidak lengkap")
+	}
+	// Penanda authuser harus ikut dipasang lagi: sync dari browser mengirim
+	// cookie polos (tanpa penanda), dan tanpa ini akun indeks >0 akan turun
+	// jadi indeks 0 — cookie benar, akun salah.
+	var au int64
+	_ = getDB().QueryRow(`SELECT auth_user FROM accounts WHERE id=?`, id).Scan(&au)
+	c = withAuthUserMarker(c, au)
+	_, err := getDB().Exec(
+		`UPDATE accounts SET cookie=?, status='enabled', fail_count=0, last_error='' WHERE id=?`,
+		c, id)
+	invalidateAuthUserCache()
+	invalidateXSRF(c)
+	return err
+}
+
+// accountSetTierOverride menyimpan tier pilihan operator ("pro"/"free"/kosong).
+func accountSetTierOverride(id int64, tier string) error {
+	tier = strings.ToLower(strings.TrimSpace(tier))
+	if tier != "" && tier != "pro" && tier != "free" {
+		return fmt.Errorf("tier harus pro, free, atau kosong")
+	}
+	_, err := getDB().Exec(`UPDATE accounts SET tier_override=? WHERE id=?`, tier, id)
+	return err
+}
+
+// accountSetRotateDisabled menandai akun sebagai milik browser (true) atau
+// milik NovaGemini (false). Lihat CookieAccount.RotateDisabled.
+func accountSetRotateDisabled(id int64, disabled bool) error {
+	v := 0
+	if disabled {
+		v = 1
+	}
+	_, err := getDB().Exec(`UPDATE accounts SET rotate_disabled=? WHERE id=?`, v, id)
 	return err
 }
 
@@ -428,7 +498,14 @@ var (
 )
 
 func modelDenyKey(acctID int64, mc ModelConfig) string {
-	return fmt.Sprintf("%d|%s|%d", acctID, mc.HexID, mc.Tool)
+	// Varian dalam satu keluarga HARUS punya kunci sendiri. Dulu kuncinya hanya
+	// (akun|hex|tool), sehingga `gemini-3.6-flash` dan `gemini-3.6-flash-thinking`
+	// berbagi kunci yang sama: begitu Google menyajikan model lain untuk yang
+	// biasa, varian thinking-nya ikut diblokir 5 menit dan permintaannya jatuh ke
+	// jalur anonim — gejalanya "needs a signed-in PAID account" padahal akunnya
+	// pro. Mode/Thinking/ThinkLevel ikut masuk kunci supaya varian terpisah.
+	return fmt.Sprintf("%d|%s|%d|%t|%d|%d",
+		acctID, mc.HexID, mc.Tool, mc.Thinking, mc.ThinkLevel, mc.Mode)
 }
 
 // markModelDenied mencatat bahwa akun ini baru saja disajikan model lain.
@@ -485,7 +562,7 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 	// 出口就按"无偏好"选了；等换号换到好号，出口已经定死 —— 于是好号的出口
 	// 粘性被坏号带偏。实测 1 好 2 坏时出口在两个代理间对半分。
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, auth_user, tier_override
 		 FROM accounts WHERE status='enabled' ORDER BY fail_count ASC, last_used_at ASC, id ASC`)
 	if err != nil {
 		return nil, false
@@ -503,7 +580,7 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
-			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID); err != nil {
+			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &a.AuthUser, &a.TierOverride); err != nil {
 			continue
 		}
 		if skip[a.ID] {
@@ -584,6 +661,29 @@ func markCookieByStatus(id int64, statusCode int, errStr string) {
 	}
 }
 
+// transportErrorPatterns 是"请求根本没到达 Google"的特征串。命中这些错误时
+// 责任在出口（代理/网络），不在 cookie —— 账号不能因为家里网断了被停用。
+var transportErrorPatterns = []string{
+	"proxyconnect", "dial tcp", "dial unix", "connection refused",
+	"no such host", "i/o timeout", "context deadline exceeded",
+	"network is unreachable", "tls handshake timeout", "connection reset by peer",
+	"proxy authentication", "socks connect",
+}
+
+// isTransportError 判断错误是不是出在出口链路上。
+func isTransportError(errStr string) bool {
+	if errStr == "" {
+		return false
+	}
+	low := strings.ToLower(errStr)
+	for _, p := range transportErrorPatterns {
+		if strings.Contains(low, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // markAccountResult 请求结束后回写结果：成功清零 fail_count 并记 last_ok_at；
 // 失败累加 fail_count 并记 last_error。
 //
@@ -602,6 +702,15 @@ func markAccountResult(id int64, ok bool, errStr string) {
 			time.Now().Unix(), id)
 		return
 	}
+	// 出口挂了不等于 cookie 挂了。曾经因为 WARP 端口掉了，一个健康账号在三次
+	// 重试里被记成 fail_count=3 然后自动停用 —— 症状和"cookie 过期"一模一样，
+	// 排查方向却完全相反。只记录，不惩罚。
+	if isTransportError(errStr) {
+		_, _ = getDB().Exec(`UPDATE accounts SET last_error=? WHERE id=?`,
+			truncate("transport: "+errStr, 200), id)
+		logf("[cookie] akun #%d tidak dihukum: kegagalan di jalur keluar, bukan sesi", id)
+		return
+	}
 	_, _ = getDB().Exec(
 		`UPDATE accounts SET fail_count=fail_count+1, last_error=? WHERE id=?`,
 		truncate(errStr, 200), id)
@@ -614,6 +723,72 @@ func markAccountResult(id int64, ok bool, errStr string) {
 // 都不算，所以连着 3 次基本等于 cookie 真的没了。取 3 不取 1：偶发的 XSRF 页面抖动
 // 也会走到这条路上，一次就停用会误伤。
 const maxCookieAuthFailures = 3
+
+// reviveAccountAfterSuccess mencabut penanda mati pada akun yang baru saja
+// membuktikan dirinya hidup.
+//
+// Kenapa perlu: status 'disabled' hanya dicabut oleh rotate atau tombol
+// "Deteksi" di panel. Padahal akun bisa membuktikan hidupnya lewat jalur lain
+// yang lebih sering terjadi — berhasil memperbarui token XSRF, atau lolos
+// pemeriksaan downgrade. Tanpa fungsi ini satu kegagalan lama membuat akun
+// sehat tetap tersaring selamanya (pool pelan-pelan habis, dan gejalanya
+// "kenapa akun saya disabled terus padahal jelas masih jalan").
+//
+// Hanya menyentuh akun yang memang disabled ATAU masih membawa fail_count;
+// akun yang sudah enabled dan bersih tidak diapa-apakan supaya tidak menulis
+// DB tiap request.
+func reviveAccountAfterSuccess(id int64) {
+	if id <= 0 {
+		return
+	}
+	res, err := getDB().Exec(
+		`UPDATE accounts SET status='enabled', fail_count=0, last_ok_at=?, last_error=''
+		 WHERE id=? AND (status!='enabled' OR fail_count>0 OR last_error!='')`,
+		time.Now().Unix(), id)
+	if err != nil {
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		logf("[cookie] akun #%d pulih: status=enabled, fail_count=0, last_ok diperbarui "+
+			"(bukti hidup dari request sukses)", id)
+	}
+}
+
+// repairAccountStatuses menjalankan pemulihan yang sama untuk SEMUA akun saat
+// boot.
+//
+// Kenapa di boot: penanda mati yang dulu ditulis oleh bug rotate tetap ada di
+// DB walaupun kodenya sudah diperbaiki. Tanpa sapuan ini, akun yang sehat
+// tetap tersaring sampai kebetulan dipilih — dan akun yang tersaring justru
+// tidak pernah dipilih, jadi penandanya tidak pernah dicabut sendiri. Sapuan
+// ini tidak mengaktifkan akun yang benar-benar mati: akun yang cookie-nya
+// memang tidak berlaku akan jatuh lagi ke jalur kegagalan biasa pada request
+// berikutnya, dan autoDisableIfDead menutupnya kembali setelah ambang.
+//
+// Akun yang di-disable MANUAL oleh operator juga dibiarkan: bedanya tidak
+// terlihat dari DB, jadi patokannya dua hal sekaligus — last_error harus
+// membawa "no SNlM0e" DAN akun harus pernah sukses dalam grace window.
+//
+// Syarat kedua itu penting: tanpa itu, akun yang mati berhari-hari (cookie
+// benar-benar hangus) ikut diaktifkan lagi di setiap boot, lalu satu request
+// membayar XSRF round-trip hanya untuk gagal. Prinsipnya sama dengan
+// recentOKWindow di rotate.go: "baru sukses" adalah bukti hidup, "lama tidak
+// pernah sukses" bukan.
+func repairAccountStatuses() {
+	cutoff := time.Now().Add(-recentOKWindow).Unix()
+	res, err := getDB().Exec(
+		`UPDATE accounts SET status='enabled', fail_count=0, last_error=''
+		 WHERE status='disabled' AND last_error LIKE '%no SNlM0e%' AND last_ok_at >= ?`,
+		cutoff)
+	if err != nil {
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		logf("[cookie] boot: %d akun yang dulu di-disable oleh bug rotate dipulihkan "+
+			"(sukses dalam %s terakhir; akan diverifikasi oleh request/rotate berikutnya)",
+			n, recentOKWindow)
+	}
+}
 
 // autoDisableIfDead 把连续失败到头的账号停用。
 //

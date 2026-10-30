@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -404,9 +405,9 @@ func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error)
 		return "", fmt.Errorf("hNvQHb butuh XSRF token (kosong untuk akun ini)")
 	}
 	reqid := time.Now().UnixNano() % 1000000
-	endpoint := fmt.Sprintf(
+	endpoint := geminiURLWithAuthUser(fmt.Sprintf(
 		"https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=hNvQHb&bl=%s&hl=en&_reqid=%d&rt=c",
-		currentBL(proxyURL), reqid)
+		currentBL(proxyURL), reqid), cookie)
 
 	// batchexecute 不带模型 header，其余（cookie / SAPISIDHASH / x-same-domain）跟主请求同款。
 	headers := buildGeminiHeaders(cookie, sapisid, "")
@@ -435,9 +436,9 @@ func deleteConversation(cid, cookie, sapisid, xsrf, proxyURL string) {
 	form.Set("f.req", string(freq))
 	form.Set("at", xsrf)
 	reqid := time.Now().UnixNano() % 1000000
-	endpoint := fmt.Sprintf(
+	endpoint := geminiURLWithAuthUser(fmt.Sprintf(
 		"https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=GzXR5e&bl=%s&hl=en&_reqid=%d&rt=c",
-		currentBL(proxyURL), reqid)
+		currentBL(proxyURL), reqid), cookie)
 	headers := buildGeminiHeaders(cookie, sapisid, "")
 	delete(headers, "x-goog-ext-525001261-jspb")
 	status, _, body, err := uploadPost(endpoint, headers, []byte(form.Encode()), proxyURL)
@@ -664,6 +665,14 @@ func downloadBytes(rawURL, cookie, proxyURL, defaultMime string) (string, []byte
 		"Origin":  "https://gemini.google.com",
 		"Referer": "https://gemini.google.com/",
 		"Accept":  "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+	}
+	// Akun ke-2 dan seterusnya: URL unduhan harus menyebut nomor akunnya, dan
+	// permintaan membawa header yang sama seperti permintaan chat. Tanpa ini CDN
+	// menjawab 403 "0 byte" walaupun artefaknya sudah jadi di sisi Google —
+	// gejalanya persis seperti media gagal padahal generasinya sukses.
+	if n := authUserForCookie(cookie); n > 0 {
+		rawURL = geminiURLWithAuthUser(rawURL, cookie)
+		headers["X-Goog-AuthUser"] = strconv.FormatInt(n, 10)
 	}
 	status, respHead, body, err := mediaGetFollow(rawURL, headers, proxyURL)
 	if err != nil {

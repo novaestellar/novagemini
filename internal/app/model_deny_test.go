@@ -1,60 +1,52 @@
 package app
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
-// Cooldown per (akun, model) adalah satu-satunya bagian dari penanganan
-// "upstream menjawab model lain" yang state-nya hidup di memori. Kalau logikanya
-// salah, gejalanya halus: akun sehat berhenti dipakai untuk sebuah model, atau
-// sebaliknya request yang sama terus mengulang perjalanan 10-20 detik ke Google.
-func TestModelDenyCooldown(t *testing.T) {
-	modelDenyMu.Lock()
-	modelDeny = map[string]int64{}
-	modelDenyMu.Unlock()
+// Regresi: cooldown model dulu berkunci (akun|hex|tool) saja, sehingga
+// `gemini-3.6-flash` dan `gemini-3.6-flash-thinking` berbagi kunci. Begitu
+// Google menyajikan model lain untuk yang biasa, varian thinking ikut diblokir
+// dan permintaannya jatuh ke jalur anonim — muncul "needs a signed-in PAID
+// account" padahal akunnya pro.
+func TestModelDenyKeySeparatesVariants(t *testing.T) {
+	plain := Models["gemini-3.6-flash"]
+	thinking := Models["gemini-3.6-flash-thinking"]
+
+	if plain.HexID != thinking.HexID {
+		t.Fatalf("asumsi tes tidak berlaku: hex berbeda (%s vs %s)", plain.HexID, thinking.HexID)
+	}
+	if modelDenyKey(6, plain) == modelDenyKey(6, thinking) {
+		t.Fatal("varian thinking berbagi kunci cooldown dengan varian biasa")
+	}
+
+	// Cooldown untuk varian biasa tidak boleh menyaring varian thinking.
+	markModelDenied(6, plain)
 	t.Cleanup(func() {
 		modelDenyMu.Lock()
 		modelDeny = map[string]int64{}
 		modelDenyMu.Unlock()
 	})
-
-	argon := Models["gemini-4-argon"]
-	flash := Models["gemini-3.6-flash"]
-
-	if modelDenied(7, argon) {
-		t.Fatal("akun yang belum ditandai tidak boleh dianggap ditolak")
+	if !modelDenied(6, plain) {
+		t.Fatal("model yang ditandai tidak terbaca sebagai cooldown")
+	}
+	if modelDenied(6, thinking) {
+		t.Fatal("cooldown varian biasa menjalar ke varian thinking")
 	}
 
-	markModelDenied(7, argon)
-	if !modelDenied(7, argon) {
-		t.Error("setelah ditandai, akun+model harus dianggap ditolak")
+	// Akun lain tetap terpisah.
+	if modelDenied(7, plain) {
+		t.Fatal("cooldown menjalar ke akun lain")
 	}
-	// Cooldown harus per pasangan: akun lain dan model lain tidak terpengaruh.
-	if modelDenied(8, argon) {
-		t.Error("akun lain tidak boleh terkena cooldown akun 7")
-	}
-	if modelDenied(7, flash) {
-		t.Error("model lain tidak boleh terkena cooldown Argon")
-	}
+}
 
-	// ID akun 0 / kosong dipakai jalur anonim: jangan pernah ditandai.
-	markModelDenied(0, argon)
-	if modelDenied(0, argon) {
-		t.Error("akun 0 (anonim) tidak boleh masuk peta cooldown")
+// Argon punya beberapa tingkat penalaran dengan hex yang sama; masing-masing
+// harus bisa di-cooldown sendiri.
+func TestModelDenyKeySeparatesThinkLevels(t *testing.T) {
+	base := Models["gemini-4-argon"]
+	high := Models["gemini-4-argon-high"]
+	if base.ThinkLevel == high.ThinkLevel {
+		t.Fatalf("asumsi tes tidak berlaku: think level sama (%d)", base.ThinkLevel)
 	}
-
-	// Kedaluwarsa: paksa waktu habis, lalu pastikan entri dibersihkan.
-	modelDenyMu.Lock()
-	modelDeny[modelDenyKey(7, argon)] = time.Now().Add(-time.Second).Unix()
-	modelDenyMu.Unlock()
-	if modelDenied(7, argon) {
-		t.Error("entri yang sudah lewat waktu harus dianggap tidak ditolak")
-	}
-	modelDenyMu.Lock()
-	_, masihAda := modelDeny[modelDenyKey(7, argon)]
-	modelDenyMu.Unlock()
-	if masihAda {
-		t.Error("entri kedaluwarsa harus dihapus saat diperiksa, bukan menumpuk")
+	if modelDenyKey(6, base) == modelDenyKey(6, high) {
+		t.Fatal("argon biasa dan argon-high berbagi kunci cooldown")
 	}
 }

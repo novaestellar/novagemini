@@ -60,7 +60,7 @@ func TestDeriveMediaJobArtifactsNoDuplicateSave(t *testing.T) {
 	t.Chdir(tmp)
 	withSaveMediaToDisk(t, 1) // 阈值 1 KB
 
-	small := MediaArtifact{Mime: "image/png", Data: bytesRepeat(0x41, 512)}   // < 1 KB -> 内联
+	small := MediaArtifact{Mime: "image/png", Data: bytesRepeat(0x41, 512)}  // < 1 KB -> 内联
 	large := MediaArtifact{Mime: "video/mp4", Data: bytesRepeat(0x42, 4096)} // >= 1 KB -> 落盘
 	src := []MediaArtifact{small, large}
 
@@ -74,12 +74,16 @@ func TestDeriveMediaJobArtifactsNoDuplicateSave(t *testing.T) {
 	}
 
 	// 顺序应与 src 一致:先小后大。
-	if arts[0].URL != "" || arts[0].Base64 == "" {
-		t.Errorf("(c) 小产物 image: URL=%q Base64.len=%d (want URL empty, Base64 non-empty)",
+	if arts[0].URL == "" || arts[0].Base64 != "" {
+		t.Errorf("(c) small image: URL=%q Base64.len=%d (want URL non-empty, Base64 empty)",
 			arts[0].URL, len(arts[0].Base64))
 	}
+	if !strings.Contains(arts[0].URL, "/files/") {
+		t.Errorf("(c) small image URL must point at /files/: %q", arts[0].URL)
+	}
 	if arts[0].Mime != "image/png" || arts[0].Bytes != len(small.Data) {
-		t.Errorf("小产物 Mime/Bytes=%s/%d want image/png/%d", arts[0].Mime, arts[0].Bytes, len(small.Data))
+		t.Errorf("(c) small image Mime/Bytes=%s/%d want image/png/%d",
+			arts[0].Mime, arts[0].Bytes, len(small.Data))
 	}
 
 	if arts[1].URL == "" || arts[1].Base64 != "" {
@@ -101,22 +105,22 @@ func TestDeriveMediaJobArtifactsNoDuplicateSave(t *testing.T) {
 	// (d) 磁盘上应恰好一个大产物文件。旧 bug 会写两份。
 	mediaRoot := filepath.Join(tmp, "data", "media")
 	got := countFiles(t, mediaRoot)
-	if got != 1 {
-		t.Fatalf("(d) 磁盘文件数=%d want 1(每个大产物只落一份); dir=%s", got, mediaRoot)
+	if got != 2 {
+		t.Fatalf("(d) each artifact must be written exactly once: files=%d want 2; dir=%s", got, mediaRoot)
 	}
 
-	// 双保险:确认落盘的就是大产物那份字节,且扩展名 .mp4。
+	// 双保险: cari file .mp4 secara eksplisit (direktori sekarang juga berisi
+	// gambar kecil yang ikut disimpan).
 	var found string
 	_ = filepath.WalkDir(mediaRoot, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".mp4") {
 			found = p
 		}
 		return nil
 	})
-	if !strings.HasSuffix(found, ".mp4") {
-		t.Errorf("落盘文件应为 .mp4, got %q", found)
-	}
-	if b, err := os.ReadFile(found); err != nil {
+	if found == "" {
+		t.Errorf("tidak ada file .mp4 di %s", mediaRoot)
+	} else if b, err := os.ReadFile(found); err != nil {
 		t.Fatalf("读取落盘文件: %v", err)
 	} else if len(b) != len(large.Data) {
 		t.Errorf("落盘文件字节=%d want %d", len(b), len(large.Data))

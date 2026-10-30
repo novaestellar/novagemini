@@ -67,6 +67,13 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 		"has_1psidts":  nameSet["__Secure-1PSIDTS"],
 		"proxy_id":     a.ProxyID,
 		"proxy_name":   proxyNameByID(a.ProxyID),
+		// rotate_disabled=1: sesi dipegang browser, NovaGemini tidak merotasi.
+		"rotate_disabled": a.RotateDisabled != 0,
+		// auth_user: nomor akun di dalam satu profil browser (Google multi-login).
+		"auth_user": a.AuthUser,
+		// tier: hasil probe terakhir (atau penetapan operator), diambil dari
+		// account_caps supaya panel bisa menampilkan tanpa memanggil probe.
+		"tier": probeForAccount(a.ID).Tier,
 	}
 }
 
@@ -85,9 +92,10 @@ func handleAdminCookies(w http.ResponseWriter, r *http.Request) {
 		})
 	case http.MethodPost:
 		var p struct {
-			Label  string `json:"label"`
-			Cookie string `json:"cookie"`
-			Note   string `json:"note"`
+			Label    string `json:"label"`
+			Cookie   string `json:"cookie"`
+			Note     string `json:"note"`
+			AuthUser int64  `json:"auth_user"`
 		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &p); err != nil {
@@ -98,6 +106,12 @@ func handleAdminCookies(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
+		}
+		if p.AuthUser > 0 {
+			if err := accountSetAuthUser(id, p.AuthUser); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		logf("[cookies] 新增账号 #%d label=%q", id, strings.TrimSpace(p.Label))
 		writeJSON(w, 200, map[string]interface{}{"id": id})
@@ -189,14 +203,48 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]interface{}{"status": next})
 	case http.MethodPatch:
 		var p struct {
-			Label  *string `json:"label"`
-			Note   *string `json:"note"`
-			Status *string `json:"status"`
+			Label          *string `json:"label"`
+			Note           *string `json:"note"`
+			Status         *string `json:"status"`
+			Cookie         *string `json:"cookie"`
+			RotateDisabled *bool   `json:"rotate_disabled"`
+			AuthUser       *int64  `json:"auth_user"`
+			Tier           *string `json:"tier"`
 		}
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &p); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad json"})
 			return
+		}
+		// Cookie baru dipasang lebih dulu: kalau formatnya salah kita berhenti
+		// sebelum menyentuh status, supaya akun tidak ditinggal dalam keadaan
+		// setengah berubah.
+		if p.Cookie != nil {
+			if err := accountSetCookie(id, *p.Cookie); err != nil {
+				writeJSON(w, 400, map[string]string{"error": err.Error()})
+				return
+			}
+			logf("[cookies] akun #%d: cookie diperbarui dari sync", id)
+		}
+		if p.RotateDisabled != nil {
+			if err := accountSetRotateDisabled(id, *p.RotateDisabled); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		if p.AuthUser != nil {
+			if err := accountSetAuthUser(id, *p.AuthUser); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+			logf("[cookies] akun #%d: authuser=%d", id, *p.AuthUser)
+		}
+		if p.Tier != nil {
+			if err := accountSetTierOverride(id, *p.Tier); err != nil {
+				writeJSON(w, 400, map[string]string{"error": err.Error()})
+				return
+			}
+			logf("[cookies] akun #%d: tier ditetapkan %q", id, *p.Tier)
 		}
 		if p.Status != nil {
 			if err := accountSetStatus(id, *p.Status); err != nil {

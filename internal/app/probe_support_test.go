@@ -69,9 +69,15 @@ func TestSupportsModelArgon(t *testing.T) {
 	}
 }
 
-// 3.6 Flash: akun yang sudah punya Flash3p8/Flash3p7 justru harus DITOLAK,
-// karena request 3.6 di sana dijawab 3.8 dan deteksi downgrade menolaknya.
-func TestSupportsModelFlash36AvoidsNewerOnlyAccounts(t *testing.T) {
+// 3.6 Flash: akun yang sudah punya Flash3p8/Flash3p7 TETAP boleh dipilih.
+//
+// Aturan lama menolaknya karena request 3.6 di sana dijawab 3.8 dan deteksi
+// model menjawab "downgraded". Tapi 3.8 lebih tinggi dari 3.6 dan konteksnya
+// tidak mengecil — itu kenaikan, bukan penurunan. Menolak akunnya membuat 3.6
+// dan 3.6-thinking mati total di akun utama yang punya 3.8 (gejalanya "needs a
+// signed-in PAID account" padahal akunnya pro). Deteksi sekarang membedakan
+// arah: naik diterima, turun ke 3.5 Flash-Lite tetap ditolak.
+func TestSupportsModelFlash36AcceptsNewerAccount(t *testing.T) {
 	f36 := Models["gemini-3.6-flash"]
 
 	older := AccountCapability{Alive: true, Rollouts: []string{"Flash3p6PaidV2Rollout:3"}}
@@ -80,7 +86,13 @@ func TestSupportsModelFlash36AvoidsNewerOnlyAccounts(t *testing.T) {
 	}
 
 	newer := AccountCapability{Alive: true, Rollouts: []string{"Flash3p8:1", "Flash3p7:3"}}
-	if newer.supportsModel(f36) {
-		t.Error("akun yang hanya punya Flash3p7/3p8 tidak boleh dipilih untuk 3.6")
+	if !newer.supportsModel(f36) {
+		t.Error("akun dengan Flash3p8/3p7 harus tetap bisa melayani 3.6 (Google menaikkan ke 3.8)")
+	}
+
+	// Yang tetap tidak boleh: akun tanpa satu pun rollout 3.6/3.7/3.8/Argon.
+	none := AccountCapability{Alive: true, Rollouts: []string{"FlashLitePaidV2Rollout:3"}}
+	if none.supportsModel(f36) {
+		t.Error("akun tanpa rollout 3.6/3.7/3.8 seharusnya tidak dipilih")
 	}
 }

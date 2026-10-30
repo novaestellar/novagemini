@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -98,10 +99,10 @@ var Models = map[string]ModelConfig{
 	"gemini-3.7-flash": {HexID: hexFlash38, Mode: 1, Desc: "alias of gemini-3.8-flash (same hex; Google renamed 3.7→3.8)"},
 	// 4 Argon（#35）：Mode=8 是真正的选择开关（见 hexArgon4 注释）。付费/Ultra 号专属，
 	// 免费号发它会被静默降级成 3.5 Flash-Lite，所以 gate 成要 cookie（modelNeedsLogin）。
-	"gemini-4-argon": {HexID: hexArgon4, Mode: 8, Desc: "4 Argon (complex tasks); needs a signed-in PAID/Ultra Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
-	"gemini-4-argon-low":    {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkLevelLow,    Desc: "4 Argon reasoning depth low/fast (index15=1)"},
+	"gemini-4-argon":        {HexID: hexArgon4, Mode: 8, Desc: "4 Argon (complex tasks); needs a signed-in PAID/Ultra Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
+	"gemini-4-argon-low":    {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkLevelLow, Desc: "4 Argon reasoning depth low/fast (index15=1)"},
 	"gemini-4-argon-medium": {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkLevelMedium, Desc: "4 Argon reasoning depth medium/balanced (index15=4)"},
-	"gemini-4-argon-high":   {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkLevelHigh,   Desc: "4 Argon reasoning depth high/deep (index15=2)"},
+	"gemini-4-argon-high":   {HexID: hexArgon4, Mode: 8, ThinkLevel: thinkLevelHigh, Desc: "4 Argon reasoning depth high/deep (index15=2)"},
 
 	// 扩展思考版。inner[80]=2 跟模型 hex 正交，都能开；但只在登录态生效，
 	// 所以跟 3.1 Pro 一样在没 cookie 时不暴露。
@@ -153,6 +154,7 @@ func modelNeedsLogin(mc ModelConfig) bool {
 //     (prepareContextFile menyerah saat cookie kosong) -> 502 pasti;
 //   - anonim tidak punya kuota/rollout akun, jadi tidak ada yang menjamin
 //     model yang menjawab benar-benar Argon.
+//
 // Jadi Argon diperlakukan seperti model berbayar lain: pakai cookie.
 //
 // Ini bukan larangan mutlak: kalau pool kosong (atau semua akun gagal),
@@ -329,12 +331,23 @@ func (e *RateLimitError) Error() string {
 //
 // 调用方拿到 (proxy, ok=true) 必须配 deferred releaseSlot()。
 func acquireSlot(preferProxyID int64) (Proxy, bool, error) {
-	// 1. 先试代理池（如果配了）
+	// 1. 先试代理池（只算启用的代理）。
+	//
+	// Dulu `len(proxyCache) > 0` dipakai sebagai penanda "ada proxy". Pool yang
+	// isinya satu proxy tapi sudah dimatikan (enabled=0) tetap dianggap ada,
+	// sehingga setiap request masuk jalur proxy, gagal memilih, lalu dilaporkan
+	// "rph limit reached" — padahal penghitungnya nol dan jalur langsung sehat.
+	// Gejalanya: model berbayar 502 instan sementara akunnya baik-baik saja.
 	proxyMu.RLock()
-	hasProxies := len(proxyCache) > 0
+	enabledProxies := 0
+	for _, p := range proxyCache {
+		if p.Enabled {
+			enabledProxies++
+		}
+	}
 	proxyMu.RUnlock()
 
-	if hasProxies {
+	if enabledProxies > 0 {
 		if p, ok := pickProxyPreferring(preferProxyID); ok {
 			return p, true, nil
 		}
@@ -342,8 +355,26 @@ func acquireSlot(preferProxyID int64) (Proxy, bool, error) {
 		// 默认**不退回直连** —— 配了代理池就意味着不想让上游看到本机 IP，
 		// 悄悄直连等于把这个前提废掉，而且日志上只是几条普通请求，很难发现。
 		// 要可用性优先于隐藏 IP 的部署可以打开 fallback_direct。
-		if !rtCfg().FallbackDirect {
-			return Proxy{}, false, &RateLimitError{Reason: "rph", ProxyID: -1}
+		// Muat ulang cache sekali sebelum memutuskan: proxy yang baru dimatikan
+		// lewat panel/DB masih terhitung enabled sampai proses restart, sehingga
+		// setiap request masuk jalur proxy lalu gagal memilih. Dulu hasilnya
+		// dilaporkan "rph limit reached" padahal penghitungnya nol.
+		loadProxies()
+		proxyMu.RLock()
+		stillEnabled := 0
+		for _, pp := range proxyCache {
+			if pp.Enabled {
+				stillEnabled++
+			}
+		}
+		proxyMu.RUnlock()
+		if stillEnabled > 0 {
+			if p, ok := pickProxyPreferring(preferProxyID); ok {
+				return p, true, nil
+			}
+			if !rtCfg().FallbackDirect {
+				return Proxy{}, false, &RateLimitError{Reason: "proxy_unavailable", ProxyID: -1}
+			}
 		}
 		if ok, reason := trySlotAcquire(0); ok {
 			logf("[proxy] 代理池无可用出口，本次退回直连（fallback_direct 已开）")
@@ -477,6 +508,11 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 			why = fmt.Sprintf("all %d enabled account(s) are unavailable for it "+
 				"(cooling down after Google served a different model, or filtered out "+
 				"because they lack the required rollout)", enabled)
+			if mc.Tool == toolMusic {
+				why = fmt.Sprintf("none of the %d enabled account(s) report music quota, so "+
+					"Google would answer with a chat model instead of generating audio; "+
+					"add or re-enable an account that can create music in the Gemini web UI", enabled)
+			}
 		}
 		return &StreamResult{}, fmt.Errorf("model %s needs a signed-in PAID account: "+
 			"the anonymous path silently replaces it with 3.5 Flash-Lite and a much "+
@@ -556,7 +592,7 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 		// 轮转会换发 __Secure-1PSIDTS（约 30 分钟过期的那张票）并合并 *SIDCC。
 		// 只是票过期、持久身份还在的号，这一步能救回来；救不回来再换号。
 		// 只试一次，且只在这一轮。
-		if !rotatedOnce[acct.ID] {
+		if !rotatedOnce[acct.ID] && acct.RotateDisabled == 0 {
 			rotatedOnce[acct.ID] = true
 			if _, _, rerr := rotateAccount(*acct); rerr == nil {
 				if fresh := accountByID(acct.ID); fresh != nil {
@@ -729,6 +765,7 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 	sessionHeader := fmt.Sprintf(`["%s",1]`, reqUUID)
 
 	geminiHeaders := buildGeminiHeaders(cookieStr, sapisid, mc.HexID)
+	endpoint = geminiURLWithAuthUser(endpoint, cookieStr)
 	geminiHeaders["x-goog-ext-525001261-jspb"] = modelHeader
 	geminiHeaders["x-goog-ext-525005358-jspb"] = sessionHeader
 	var lastErr error
@@ -810,14 +847,37 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 			continue
 		}
 		if statusCode != 200 {
-			// token 过期时上游回 400 + xsrf。作废缓存重取一次再打，
-			// 这种自愈不算进重试预算，否则一次过期就吃掉全部重试。
+			// token 过期时上游回 400 + xsrf. Dua jalur, dari yang termurah:
+			//
+			//  1. Token pengganti sudah IKUT di respons error -> pakai langsung.
+			//     Nol round-trip tambahan. Ini yang membuat cookie basi pulih
+			//     dalam satu retry, bukan lewat fetch /app yang justru sering
+			//     kena 429 saat semua request sedang gagal.
+			//  2. Tidak ada token di respons -> baru fetch ulang /app.
+			//
+			// Keduanya tidak memakan jatah retry: sekali token basi bukan
+			// kegagalan request, dan menghabiskannya membuat request sehat
+			// ikut mati bersama token lamanya.
 			if statusCode == 400 && isXSRFError(string(raw)) && cookieStr != "" && !xsrfRetried {
 				xsrfRetried = true
 				invalidateXSRF(cookieStr)
-				if tok, e := getXSRF(cookieStr, proxyURL, ctx); e == nil {
+				tok, src := cacheXSRFFromError(cookieStr, string(raw)), "dari respons error"
+				if tok == "" {
+					if t, e := getXSRF(cookieStr, proxyURL, ctx); e == nil {
+						tok, src = t, "dari /app"
+					}
+				}
+				if tok != "" {
+					logf("[xsrf] %s: token diperbarui %s, ulangi tanpa memakai jatah retry",
+						modelLabel(mc), src)
+					// Akun yang bisa memulihkan tokennya sendiri jelas HIDUP.
+					// Tanpa ini akun tetap "disabled" dari kegagalan sebelumnya
+					// walaupun request berikutnya sukses, dan pool pelan-pelan
+					// habis karena penanda mati tidak pernah dicabut.
+					reviveAccountAfterSuccess(cookieID)
 					body = buildBody(tok)
 					geminiHeaders = buildGeminiHeaders(cookieStr, sapisid, mc.HexID)
+					endpoint = geminiURLWithAuthUser(endpoint, cookieStr)
 					geminiHeaders["x-goog-ext-525001261-jspb"] = modelHeader
 					geminiHeaders["x-goog-ext-525005358-jspb"] = sessionHeader
 					attempt--
@@ -1004,6 +1064,11 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 			recordProxyResult(picked.ID, true, "")
 		}
 		markCookieByStatus(cookieID, 200, "")
+		// Sukses = bukti hidup, cabut juga penanda mati yang mungkin tersisa
+		// dari kegagalan sebelumnya. markCookieByStatus(200) sudah me-reset
+		// fail_count, tapi TIDAK menyentuh status; tanpa baris ini akun yang
+		// pernah di-disable tetap tersaring walaupun request-nya sukses.
+		reviveAccountAfterSuccess(cookieID)
 		result := &StreamResult{
 			Emitted:          tracker.emitted,
 			EmittedReasoning: rtracker.emitted,
@@ -1101,7 +1166,6 @@ func extractUpstreamModel(raw string) string {
 	return m[len(m)-1][1]
 }
 
-
 // mediaQuotaExhausted mendeteksi respons Google yang menyatakan jatah media
 // sudah habis (bukan karena akun tidak punya akses). Google mengirim teks
 // seperti "I can create more videos as soon as your limit resets" tanpa
@@ -1192,7 +1256,15 @@ func modelServedMatches(mc ModelConfig, served string) bool {
 	case hexPro31:
 		return strings.Contains(norm, "3.1pro")
 	case hexFlash36:
-		return strings.Contains(norm, "3.6flash")
+		// 3.6 diminta, tapi Google menaikkan ke 3.8 di akun yang punya rollout
+		// lebih baru. Itu bukan penurunan kelas: 3.8 lebih tinggi dari 3.6 dan
+		// konteksnya tidak mengecil, jadi diterima — nama model yang benar-benar
+		// dipakai tetap tercatat di kolom upstream_model.
+		//
+		// Yang tetap ditolak adalah penurunan nyata (3.5 Flash-Lite), karena di
+		// situ konteks dan kemampuannya benar-benar berkurang.
+		return strings.Contains(norm, "3.6flash") ||
+			strings.Contains(norm, "3.8flash") || strings.Contains(norm, "3.7flash")
 	case hexFlashLite:
 		return strings.Contains(norm, "flash-lite") || strings.Contains(norm, "flashlite")
 	}
@@ -1327,7 +1399,11 @@ func buildGeminiHeaders(cookieStr, sapisid, hexID string) map[string]string {
 		h["x-goog-ext-525001261-jspb"] = buildModelHeader(hexID, 0, 0, 0, "")
 	}
 	if cookieStr != "" {
-		h["Cookie"] = cookieStr
+		h["Cookie"] = stripAuthUserMarker(cookieStr)
+	}
+	// Akun ke-2 dan seterusnya dalam satu profil dibedakan lewat header ini.
+	if n := authUserForCookie(cookieStr); n > 0 {
+		h["X-Goog-AuthUser"] = strconv.FormatInt(n, 10)
 	}
 	if sapisid != "" {
 		h["Authorization"] = makeSAPISIDHash(sapisid)
@@ -1744,6 +1820,7 @@ func probeGemini(prompt, proxyURL string) ProbeResult {
 	// probe 是旁路探测，不回写 cookie 健康度：它的失败原因跟 cookie 无关。
 	// 但 at 必须带——否则挂了 cookie 之后连通性探测会一直报 400，假报故障。
 	cookieStr, sapisid := loadCookie()
+	endpoint = geminiURLWithAuthUser(endpoint, cookieStr)
 	if tok, e := getXSRF(cookieStr, proxyURL); e == nil && tok != "" {
 		form.Set("at", tok)
 		body = form.Encode()

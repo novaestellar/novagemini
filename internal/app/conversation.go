@@ -335,9 +335,9 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	geminiHeaders["x-goog-ext-525005358-jspb"] = fmt.Sprintf(`["%s",1]`, reqUUID)
 
 	reqid := time.Now().UnixNano() % 1000000
-	endpoint := fmt.Sprintf(
+	endpoint := geminiURLWithAuthUser(fmt.Sprintf(
 		"https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=%s&hl=en&_reqid=%d&rt=c",
-		currentBL(proxyURL), reqid)
+		currentBL(proxyURL), reqid), conv.cookie)
 
 	tracker := &deltaTracker{}
 	rtracker := &deltaTracker{}

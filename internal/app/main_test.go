@@ -31,3 +31,71 @@ func withPoolCookie(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = accountDelete(id) })
 }
+
+// withTestDB menjalankan f dengan DB yang bersih lalu memulihkan isinya.
+//
+// DB tes dipakai bersama seluruh paket (TestMain menetapkan path sekali), jadi
+// tes yang butuh "tidak ada akun lain" harus mengosongkan dan mengembalikan.
+// Dipakai oleh tes siklus hidup akun (auto-disable / revive), yang hasilnya
+// bergantung pada jumlah baris di tabel accounts.
+func withTestDB(t *testing.T) {
+	t.Helper()
+	db := getDB()
+
+	// Simpan isi lama supaya tes lain tidak terganggu.
+	type row struct {
+		id                                                  int64
+		label, cookie, status, note, lastError              string
+		createdAt, lastUsedAt, lastOkAt, failCount, proxyID int64
+	}
+	var saved []row
+	rows, err := db.Query(`SELECT id,label,cookie,status,note,created_at,last_used_at,
+		last_ok_at,fail_count,proxy_id,last_error FROM accounts`)
+	if err == nil {
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.label, &r.cookie, &r.status, &r.note,
+				&r.createdAt, &r.lastUsedAt, &r.lastOkAt, &r.failCount, &r.proxyID,
+				&r.lastError); err == nil {
+				saved = append(saved, r)
+			}
+		}
+		rows.Close()
+	}
+	if _, err := db.Exec(`DELETE FROM accounts`); err != nil {
+		t.Fatalf("kosongkan accounts: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = getDB().Exec(`DELETE FROM accounts`)
+		for _, r := range saved {
+			_, _ = getDB().Exec(`INSERT INTO accounts
+				(id,label,cookie,status,note,created_at,last_used_at,last_ok_at,fail_count,proxy_id,last_error)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+				r.id, r.label, r.cookie, r.status, r.note, r.createdAt, r.lastUsedAt,
+				r.lastOkAt, r.failCount, r.proxyID, r.lastError)
+		}
+	})
+}
+
+// insertTestAccount menambah satu akun uji dan mengembalikan id-nya.
+func insertTestAccount(t *testing.T, label string) int64 {
+	t.Helper()
+	id, err := accountAdd(label, "SAPISID=dummy; SID=x", "")
+	if err != nil {
+		t.Fatalf("accountAdd: %v", err)
+	}
+	return id
+}
+
+// accountStatusAndFails membaca status + fail_count langsung dari DB.
+func accountStatusAndFails(t *testing.T, id int64) (string, int64) {
+	t.Helper()
+	var status string
+	var fails int64
+	if err := getDB().QueryRow(`SELECT status, fail_count FROM accounts WHERE id=?`, id).
+		Scan(&status, &fails); err != nil {
+		t.Fatalf("baca akun #%d: %v", id, err)
+	}
+	return status, fails
+}

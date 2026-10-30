@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,9 +46,13 @@ var pushIDRe = regexp.MustCompile(`"qKIAYe":"([^"]{4,400})"`)
 var pctxRe = regexp.MustCompile(`"Ylro7b":"([^"]{4,400})"`)
 
 // cookieKey 用 cookie 的短摘要当缓存键，避免把整串凭证塞进 map key。
+//
+// Nomor akun ikut masuk ke kunci. Satu profil browser bisa memegang banyak akun
+// dengan SATU set cookie, dan tiap akun punya XSRF token sendiri — berbagi kunci
+// membuat akun indeks 1..N memakai token akun indeks 0, yang dijawab 400.
 func cookieKey(cookie string) string {
 	sum := sha1.Sum([]byte(cookie))
-	return hex.EncodeToString(sum[:8])
+	return fmt.Sprintf("%s|%d", hex.EncodeToString(sum[:8]), authUserForCookie(cookie))
 }
 
 // invalidateXSRF 丢掉某个 cookie 的缓存 token，下次取会重新抓页面。
@@ -58,6 +63,33 @@ func invalidateXSRF(cookie string) {
 	xsrfMu.Lock()
 	delete(xsrfCache, cookieKey(cookie))
 	xsrfMu.Unlock()
+}
+
+// cacheXSRFFromError menyimpan token pengganti yang dikirim server bersama
+// error 400, lalu mengembalikannya. Kosong = respons tidak membawa token, dan
+// pemanggil harus jatuh ke fetch /app.
+//
+// pushID/pctx sengaja tidak disentuh: token ini hanya dipakai untuk header
+// XSRF, sedangkan upload file tetap butuh nilai dari halaman. Mengisi sebagian
+// cache dengan nilai kosong akan membuat upload berikutnya gagal tanpa sebab
+// yang jelas — lebih baik biarkan entri lama, atau kosong dan diisi lewat
+// fetchAppTokens saat benar-benar diperlukan.
+func cacheXSRFFromError(cookie, raw string) string {
+	tok := xsrfTokenFromError(raw)
+	if tok == "" || cookie == "" {
+		return ""
+	}
+	key := cookieKey(cookie)
+	xsrfMu.Lock()
+	e, ok := xsrfCache[key]
+	if !ok {
+		e = xsrfEntry{}
+	}
+	e.token = tok
+	e.fetched = time.Now()
+	xsrfCache[key] = e
+	xsrfMu.Unlock()
+	return tok
 }
 
 // getXSRF 取该 cookie 对应的 XSRF token；命中缓存且没过期就直接返回。
@@ -112,18 +144,22 @@ func getUploadTokens(cookie, proxyURL string, ctxs ...context.Context) (pushID, 
 // cookie 传空串就是匿名抓（页面照样返回，只是没有登录态字段）。
 func fetchAppPage(cookie, proxyURL string, ctxs ...context.Context) ([]byte, error) {
 	ctx := optCtx(ctxs)
-	const pageURL = "https://gemini.google.com/app"
+	pageTarget := appPageURL(cookie)
 	headers := map[string]string{
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"Accept-Language": "en-US,en;q=0.9",
 	}
 	if cookie != "" {
-		headers["Cookie"] = cookie
+		headers["Cookie"] = stripAuthUserMarker(cookie)
+	}
+	if n := authUserForCookie(cookie); n > 0 {
+		// XSRF dan pushID milik akun yang sedang dituju, bukan akun indeks 0.
+		headers["X-Goog-AuthUser"] = strconv.FormatInt(n, 10)
 	}
 
 	var body []byte
 	if proxyURL != "" {
-		req, err := http.NewRequest("GET", pageURL, nil)
+		req, err := http.NewRequest("GET", pageTarget, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -147,7 +183,7 @@ func fetchAppPage(cookie, proxyURL string, ctxs ...context.Context) ([]byte, err
 			return nil, err
 		}
 	} else {
-		req, err := fhttp.NewRequest("GET", pageURL, nil)
+		req, err := fhttp.NewRequest("GET", pageTarget, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -199,4 +235,32 @@ func fetchAppTokens(cookie, proxyURL string, ctxs ...context.Context) (xsrfEntry
 // 响应体形如：[["er",null,...,400,...,[{"48448350":["xsrf","<新token>",...]}]]]
 func isXSRFError(raw string) bool {
 	return strings.Contains(raw, `"xsrf"`)
+}
+
+// xsrfTokenFromError mengambil token pengganti yang IKUT dikirim di respons 400.
+//
+// Ini bagian yang membuat pemulihan jadi murah: server sudah memberi token baru
+// di dalam error, jadi kita tidak perlu fetch ulang /app (satu round-trip penuh
+// plus parse HTML) hanya untuk mendapatkannya. Ratusan baris parse di sini
+// menghindari pola yang paling mahal saat cookie sedang basi: setiap request
+// memicu fetch /app, /app kena 429 dari Google, dan akun tampak mati.
+//
+// Bentuknya ["xsrf","<token>",...] di dalam array error. Token selalu
+// pendek (base64-ish, tanpa kutip/backslash), jadi pola sederhana cukup dan
+// lebih tahan terhadap variasi struktur di sekitarnya.
+var xsrfTokenRe = regexp.MustCompile(`"xsrf"\s*,\s*"([^"\\]{8,})"`)
+
+func xsrfTokenFromError(raw string) string {
+	m := xsrfTokenRe.FindStringSubmatch(raw)
+	if m == nil {
+		return ""
+	}
+	tok := m[1]
+	// Sanity: token asli selalu diawali AOEx / AF_ / AD- style. Terima apa pun
+	// yang cukup panjang dan tidak mengandung karakter aneh, tapi tolak yang
+	// jelas bukan token (mis. string kosong atau berisi spasi).
+	if strings.ContainsAny(tok, " \t\r\n") {
+		return ""
+	}
+	return tok
 }

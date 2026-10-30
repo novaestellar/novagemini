@@ -57,6 +57,23 @@ var (
 // 第一个参数是这个会话的标识，最后一个是下次轮转的间隔秒数。
 var rotateInitRe = regexp.MustCompile(`init\('([^']{4,64})'\s*,\s*([0-9.]+)\s*,[^)]*?([0-9.]+)\s*\)`)
 
+// recentOKWindow adalah berapa lama "baru sukses" masih dianggap bukti bahwa
+// cookie hidup. Dipakai untuk menahan auto-disable saat rotate gagal sesaat:
+// akun yang sukses dalam jendela ini tidak mungkin sesinya tamat karena satu
+// percobaan SNlM0e hilang.
+const recentOKWindow = 30 * time.Minute
+
+// humanSince memformat selisih detik untuk log. -1 berarti belum pernah sukses.
+func humanSince(sec int64) string {
+	if sec < 0 {
+		return "belum pernah"
+	}
+	if sec < 3600 {
+		return fmt.Sprintf("%dm", sec/60)
+	}
+	return fmt.Sprintf("%dh", sec/3600)
+}
+
 // rotateAccount 给一个账号做一次保活：先刷 1PSIDTS，再刷 SIDCC。
 // 返回服务端建议的下次间隔，以及这一轮实际刷新的 cookie 名。
 func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
@@ -118,14 +135,36 @@ func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 				sidccErr = nil
 			}
 		} else {
-			// Sesi benar-benar mati: /app tidak membawa SNlM0e. Ini bukan
-			// konflik, cookie memang sudah tidak berlaku. Tandai supaya tidak
-			// dipakai terus dan tidak membuang waktu request.
-			logf("[rotate] akun #%d: sesi mati (tanpa SNlM0e) - disable", a.ID)
+			// Rotate gagal DAN /app tidak membawa SNlM0e. JANGAN langsung disable.
+			//
+			// Dulu di sini akun ditutup permanen karena satu percobaan: satu
+			// RotateCookies yang dijawab 429, atau satu getXSRF yang kena halaman
+			// lambat, cukup untuk membuat akun sehat tampil "cookie expired"
+			// selamanya. Yang terukur: acc1 punya fail_count=24 tapi last_ok_at
+			// hanya beberapa jam sebelumnya — akun yang baru sukses tidak mungkin
+			// mati karena satu SNlM0e hilang.
+			//
+			// Diagnosis yang benar untuk kasus ini: cookie kita TIDAK LENGKAP
+			// (kehilangan __Secure-1PSIDTS/3PSIDTS/SIDCC), bukan sesi tamat. Itu
+			// bisa pulih sendiri lewat rotate berikutnya, jadi perlakukan sebagai
+			// sinyal "perlu resync": naikkan fail_count, biarkan autoDisableIfDead
+			// yang memutuskan setelah 3 kegagalan beruntun — aturan yang sama
+			// dengan jalur 401/403.
+			secondsSinceOK := int64(-1)
+			if a.LastOkAt > 0 {
+				secondsSinceOK = time.Now().Unix() - a.LastOkAt
+			}
+			recent := secondsSinceOK >= 0 && secondsSinceOK < int64(recentOKWindow.Seconds())
+			logf("[rotate] akun #%d: /app tanpa SNlM0e (rotate gagal, terakhir sukses %s lalu) - "+
+				"tidak di-disable, tandai perlu resync", a.ID, humanSince(secondsSinceOK))
 			_, _ = getDB().Exec(
-				`UPDATE accounts SET status='disabled', fail_count=fail_count+1,
-				 last_error=? WHERE id=?`,
-				"no SNlM0e in page (cookie expired or not signed in)", a.ID)
+				`UPDATE accounts SET fail_count=fail_count+1, last_error=? WHERE id=?`,
+				"no SNlM0e in page (cookie incomplete or rotate in progress)", a.ID)
+			if !recent {
+				// Baru kalau memang sudah lama tidak sukses, kegagalan ini boleh
+				// dihitung sebagai kematian (autoDisableIfDead butuh 3 beruntun).
+				autoDisableIfDead(a.ID)
+			}
 		}
 	}
 
@@ -249,7 +288,7 @@ func rotateSIDCC(cookie, proxyURL string) (string, time.Duration, []string, erro
 
 	body := fmt.Sprintf(`[%d,"%s"]`, rotateProductID, id)
 	headers := rotatePostHeaders()
-	headers["Cookie"] = cookie
+	headers["Cookie"] = stripAuthUserMarker(cookie)
 	status, setCookie, respBody, err := rotatePost(rotatePostURL, headers, []byte(body), proxyURL)
 	if err != nil {
 		return cookie, 0, nil, err
@@ -327,7 +366,7 @@ func fetchRotateParams(cookie, proxyURL string) (string, time.Duration, []string
 // XHR 完全不同（dest=iframe / mode=navigate / site=same-site），别套用默认值。
 func rotateGet(url, cookie, proxyURL string) (int, []string, []byte, error) {
 	return rotateDo("GET", url, map[string]string{
-		"Cookie":                    cookie,
+		"Cookie":                    stripAuthUserMarker(cookie),
 		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
 		"Referer":                   "https://gemini.google.com/",
 		"Sec-Fetch-Dest":            "iframe",
@@ -419,6 +458,13 @@ func rotateDo(method, url string, headers map[string]string, body []byte, proxyU
 func rotateAllAccounts() time.Duration {
 	next := defaultRotateInterval
 	for _, a := range accountList() {
+		// Akun yang sesinya dipegang browser dilewati: merotasi tokennya di sini
+		// akan membatalkan token yang sedang dipakai browser, dan browser akan
+		// membalas dengan membatalkan milik kita. Dua pemilik satu sesi selalu
+		// berakhir dengan "no SNlM0e" pada salah satu pihak.
+		if a.RotateDisabled != 0 {
+			continue
+		}
 		// Akun disabled tetap dicoba rotate: kalau cookie-nya ternyata masih
 		// hidup, rotateAccount akan memulihkannya (reset fail_count + enable).
 		// Tanpa ini akun yang sempat gagal sekali tidak akan pernah kembali.

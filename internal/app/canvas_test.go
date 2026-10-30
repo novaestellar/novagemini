@@ -71,9 +71,15 @@ func TestCanvasAlwaysSavedToDisk(t *testing.T) {
 		t.Errorf("canvas tidak boleh jadi data URL (diblokir browser), got %q", got)
 	}
 
-	// Gambar kecil tetap inline: aturan khusus ini hanya untuk canvas.
+	// Gambar kecil juga harus ke disk: base64 di dalam markdown membengkakkan
+	// payload ke klien, dan galeri hanya membaca isi data/media — gambar inline
+	// tidak pernah muncul di sana.
 	img := []byte{0x89, 'P', 'N', 'G', 1, 2, 3}
-	if g := artifactLink(MediaArtifact{Mime: "image/png", Data: img}, "http://test.local"); !strings.Contains(g, "data:") {
-		t.Errorf("gambar kecil seharusnya tetap inline, got %q", g)
+	g := artifactLink(MediaArtifact{Mime: "image/png", Data: img}, "http://test.local")
+	if !strings.HasPrefix(g, "![image](http") {
+		t.Errorf("gambar kecil harus jadi URL /files, got %q", g)
+	}
+	if strings.Contains(g, "data:") {
+		t.Errorf("gambar tidak boleh inline saat simpan-ke-disk menyala, got %q", g)
 	}
 }

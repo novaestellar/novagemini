@@ -43,7 +43,7 @@ func uploadBytes(cookie, proxyURL string, data []byte, filename string, ctxs ...
 		base["X-Client-Pctx"] = pctx
 	}
 	if cookie != "" {
-		base["Cookie"] = cookie
+		base["Cookie"] = stripAuthUserMarker(cookie)
 	}
 	with := func(extra map[string]string) map[string]string {
 		h := make(map[string]string, len(base)+len(extra))

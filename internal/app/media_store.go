@@ -113,16 +113,14 @@ func artifactLink(a MediaArtifact, baseURL string) string {
 		}
 	}
 
-	if !rtCfg().SaveMediaToDisk || len(a.Data) < mediaInlineLimitBytes() {
-		// Canvas selalu ditulis ke disk kalau fitur itu menyala, walau ukurannya
-		// di bawah ambang inline. Dua alasan:
-		//   1. Chrome memblokir navigasi/iframe ke data: URL, jadi data URL
-		//      tidak bisa dipakai membuka dokumen canvas sama sekali.
-		//   2. Galeri hanya memuat apa yang ada di data/media. Canvas inline
-		//      tidak pernah muncul di sana.
-		if !(isCanvas && rtCfg().SaveMediaToDisk) {
-			return inline()
-		}
+	// Kalau fitur simpan-ke-disk menyala, SEMUA artefak ditulis ke disk —
+	// termasuk gambar kecil. Dulu gambar di bawah ambang inline dikirim sebagai
+	// data URL saja, dan akibatnya tidak pernah muncul di galeri (galeri hanya
+	// membaca isi data/media). Selain itu base64 160 KB di dalam markdown ikut
+	// membengkakkan payload ke klien. URL /files/… jauh lebih ringan dan bisa
+	// dibuka langsung. Ambang inline sekarang hanya berlaku saat fitur ini mati.
+	if !rtCfg().SaveMediaToDisk {
+		return inline()
 	}
 
 	rel, err := saveArtifact(a.Data, a.Mime)

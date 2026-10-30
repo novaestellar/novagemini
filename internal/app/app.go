@@ -81,6 +81,7 @@ func Run() {
 	seedProxiesFromConfig() // --proxy / 遗留静态代理并进代理池
 	seedCookiesFromConfig() // --cookie-file / 遗留单 cookie 并进 cookie 池
 	loadProbeCache()        // 上次的 kapabilitas 账号，routing langsung pintar
+	repairAccountStatuses() // cabut penanda mati yang dulu ditulis bug rotate
 	resolvedAPIKey := initAPIKey(*apiKey)
 	initTokenizer()
 	startScheduler()
@@ -154,7 +155,7 @@ func Run() {
 		mux.HandleFunc("/admin/api/cookies", requireAuth(handleAdminCookies))
 		mux.HandleFunc("/admin/api/cookies/", requireAuth(handleAdminCookieItem))
 		mux.HandleFunc("/admin/api/probe", requireAuth(handleAdminProbe))
-	mux.HandleFunc("/files/", handleMediaFile)
+		mux.HandleFunc("/files/", handleMediaFile)
 		mux.HandleFunc("/admin/api/test", requireAuth(handleAdminTest))
 	}
 

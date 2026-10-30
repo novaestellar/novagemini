@@ -412,6 +412,14 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		finish = "tool_calls"
 	}
 
+	if stream {
+		// Tahan penolakan generik sebelum terkirim sebagai jawaban.
+		if serr := sse.Settle(text); serr != nil {
+			recordRequest("chat.completions", modelName, prompt, text, res, 502, serr.Error(), stream)
+			sse.Fail(serr)
+			return
+		}
+	}
 	recordRequest("chat.completions", modelName, prompt, text, res, 200, "", stream)
 	if stream {
 		var usage map[string]int
