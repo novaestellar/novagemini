@@ -74,6 +74,8 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 		// tier: hasil probe terakhir (atau penetapan operator), diambil dari
 		// account_caps supaya panel bisa menampilkan tanpa memanggil probe.
 		"tier": probeForAccount(a.ID).Tier,
+		// impersonate: sidik jari yang dipakai untuk akun ini ("" = global).
+		"impersonate": a.Impersonate,
 	}
 }
 

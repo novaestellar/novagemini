@@ -808,6 +808,15 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 	if mc.Tool > 0 && maxAttempts > 1 {
 		maxAttempts = 1
 	}
+	// Sidik jari harus cocok dengan browser yang membuat sesi ini: cookie dari
+	// Firefox dikirim dengan profil Firefox. Tanpa ini Google melihat "sesi
+	// dibuat di perangkat A, dipakai dari perangkat B" dan mencabutnya.
+	if cookieID > 0 {
+		if prof := impersonateForAccount(cookieID); prof != "" {
+			ctx = withTLSProfile(ctx, prof)
+		}
+	}
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB, ctx)
 		if len(setCookie) > 0 && cookieID > 0 {
@@ -1457,7 +1466,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	client := getTLSClient()
+	client := tlsClientFor(tlsProfileFrom(ctx))
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, 0, nil, err

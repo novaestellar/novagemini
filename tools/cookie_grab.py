@@ -371,7 +371,7 @@ def redact(value: str) -> str:
 def novagemini_add(base: str, api_key: str, label: str, cookie: str, note: str,
                    auth_user: int = 0) -> dict:
     body = json.dumps({"label": label, "cookie": cookie, "note": note,
-                       "auth_user": auth_user}).encode()
+                       "impersonate": "firefox_147", "auth_user": auth_user}).encode()
     req = urllib.request.Request(
         f"{base.rstrip('/')}/admin/api/cookies", data=body, method="POST",
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},

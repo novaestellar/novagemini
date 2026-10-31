@@ -30,6 +30,11 @@ type CookieAccount struct {
 	// "no SNlM0e" —— 健康的账号看起来像死了。这类账号的 cookie 由
 	// cookie_grab sync 定期覆盖，不由本服务续期。
 	RotateDisabled int64 `json:"rotate_disabled"`
+	// Impersonate: sidik jari TLS/HTTP2 yang dipakai untuk akun ini. Kalau
+	// kosong, pakai nilai global. Sesi yang lahir dari Firefox harus dikirim
+	// dengan sidik jari Firefox; memakai chrome_146 untuk cookie Firefox
+	// membuat Google mencabut sesinya dalam hitungan jam.
+	Impersonate string `json:"impersonate"`
 
 	// AuthUser 是同一个浏览器 profile 里 Google 多账号登录的序号，0 = 主账号。
 	// Satu profil bisa memegang belasan akun dengan SATU set cookie; yang
@@ -162,7 +167,7 @@ func accountList() []CookieAccount {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
 			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount,
-			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride); err != nil {
+			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride, &a.Impersonate); err != nil {
 			continue
 		}
 		out = append(out, a)
@@ -181,7 +186,7 @@ func accountByID(id int64) *CookieAccount {
 		 FROM accounts WHERE id=?`, id).
 		Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
 			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount,
-			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride)
+			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride, &a.Impersonate)
 	if err != nil {
 		return nil
 	}
@@ -562,7 +567,7 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 	// 出口就按"无偏好"选了；等换号换到好号，出口已经定死 —— 于是好号的出口
 	// 粘性被坏号带偏。实测 1 好 2 坏时出口在两个代理间对半分。
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, auth_user, tier_override
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, auth_user, tier_override, impersonate, impersonate
 		 FROM accounts WHERE status='enabled' ORDER BY fail_count ASC, last_used_at ASC, id ASC`)
 	if err != nil {
 		return nil, false
@@ -580,7 +585,7 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
-			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &a.AuthUser, &a.TierOverride); err != nil {
+			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &a.AuthUser, &a.TierOverride, &a.Impersonate); err != nil {
 			continue
 		}
 		if skip[a.ID] {
@@ -975,4 +980,32 @@ func updateAccountCookie(id int64, cookie string) {
 		}
 	}
 	_, _ = getDB().Exec(`UPDATE accounts SET cookie=? WHERE id=?`, cookie, id)
+}
+
+// accountSetImpersonate menyimpan sidik jari untuk satu akun ("" = ikut global).
+func accountSetImpersonate(id int64, profile string) error {
+	profile = strings.TrimSpace(profile)
+	_, err := getDB().Exec(`UPDATE accounts SET impersonate=? WHERE id=?`, profile, id)
+	return err
+}
+
+// impersonateForAccount mengembalikan sidik jari efektif sebuah akun.
+func impersonateForAccount(id int64) string {
+	var p string
+	if err := getDB().QueryRow(`SELECT impersonate FROM accounts WHERE id=?`, id).Scan(&p); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(p)
+}
+
+// impersonateForCookie mencari sidik jari dari cookie yang tersimpan.
+func impersonateForCookie(cookie string) string {
+	if strings.TrimSpace(cookie) == "" {
+		return ""
+	}
+	var p string
+	if err := getDB().QueryRow(`SELECT impersonate FROM accounts WHERE cookie=?`, cookie).Scan(&p); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(p)
 }

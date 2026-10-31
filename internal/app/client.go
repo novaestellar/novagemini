@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
@@ -54,6 +55,56 @@ func resolveProfile(name string) profiles.ClientProfile {
 // getTLSClient returns a tls-client (Chrome 146 fingerprint) for direct connections only.
 // For proxied connections we use stdlib (see getStdlibClient) — tls-client's SOCKS5
 // implementation is fragile compared to net/http.
+// ctxTLSProfile membawa sidik jari yang harus dipakai untuk request ini.
+type ctxTLSProfile struct{}
+
+func withTLSProfile(ctx context.Context, profile string) context.Context {
+	if ctx == nil || strings.TrimSpace(profile) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxTLSProfile{}, strings.TrimSpace(profile))
+}
+
+func tlsProfileFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(ctxTLSProfile{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// tlsClientFor mengembalikan klien dengan sidik jari tertentu (kosong = global).
+func tlsClientFor(profile string) tls_client.HttpClient {
+	if strings.TrimSpace(profile) == "" {
+		return getTLSClient()
+	}
+	key := strings.ToLower(strings.TrimSpace(profile))
+	clientCacheMu.RLock()
+	if c, ok := clientCache[key]; ok {
+		clientCacheMu.RUnlock()
+		return c
+	}
+	clientCacheMu.RUnlock()
+	clientCacheMu.Lock()
+	defer clientCacheMu.Unlock()
+	if c, ok := clientCache[key]; ok {
+		return c
+	}
+	opts := []tls_client.HttpClientOption{
+		tls_client.WithTimeoutSeconds(totalRequestBudget()),
+		tls_client.WithClientProfile(resolveProfile(key)),
+		tls_client.WithNotFollowRedirects(),
+	}
+	c, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), opts...)
+	if err != nil {
+		return getTLSClient()
+	}
+	clientCache[key] = c
+	return c
+}
+
 func getTLSClient() tls_client.HttpClient {
 	clientCacheMu.RLock()
 	if c, ok := clientCache[rtCfg().Impersonate]; ok {

@@ -202,7 +202,11 @@ func getDB() *dbx {
 			// menimpanya.
 			_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN tier_override TEXT NOT NULL DEFAULT ''`)
 
-			// Kunci per klien: satu baris per klien, dengan kuota sendiri.
+			// Sidik jari per akun: sesi dibuat oleh browser tertentu, dan memakai
+	// sidik jari lain membuat Google menganggapnya sesi curian.
+	_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN impersonate TEXT NOT NULL DEFAULT ''`)
+
+	// Kunci per klien: satu baris per klien, dengan kuota sendiri.
 			_, _ = conn.Exec(`CREATE TABLE IF NOT EXISTS client_keys (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		name          TEXT NOT NULL DEFAULT '',
