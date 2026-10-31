@@ -260,6 +260,29 @@ Google 一个浏览器配置最多 10 个账号（`/u/0` … `/u/9`）。novagem
 
 ---
 
+### 从浏览器取回会话（推荐做法）
+
+网页会话由浏览器创建，也应当由浏览器保有。把 cookie 复制到服务端、再让服务端自己轮换，会让浏览器和服务端同时旋转同一个 token，两边互相作废 —— 实测这样会让十个账号在几小时内一起失效。
+
+正确流程是「借用」而不是「占有」：
+
+```bash
+# 1. 在浏览器里登录（Firefox 或 Chrome 均可）。浏览器可以保持打开：
+#    工具读的是配置文件的副本，不碰你正在用的那个。
+# 2. 取出 cookie、验证登录、再写入服务端
+python tools\browser_harvest.py --profile "s1d1gj83.default-release" --import --api-key sk-gemini-…
+python tools\chrome_harvest.py                      # 先看看 Chrome 有没有可用会话
+# 3. 逐个核验（不用 SNlM0e，而是看 /app 是否被重定向）
+python tools\verify_accounts.py
+```
+
+写入时工具会同时设置两件事：
+
+- `impersonate=firefox_147`（或 `chrome_146`）：cookie 由哪个浏览器生成，就用哪个浏览器的 TLS/HTTP2 指纹发送。指纹对不上，Google 会把它当作会话被盗；
+- `rotate_disabled=1`：标记为 **browser-owned**。服务端不再轮换这些账号，会话始终归浏览器所有。
+
+依赖：`geckodriver`（Firefox）与 `chromedriver`（Chrome），都可以用 `winget` 安装。两个脚本都**不会**在会话未通过验证时写入任何东西 —— 宁可留下一个明确的「需要重新登录」，也不要一行看起来正常、实际已死的记录。
+
 ## 🔑 客户端 Key
 
 除了全局 `API_KEY`，面板「设置」页可以给每个客户端单独发一把 key（`sk-gm-…`）：
