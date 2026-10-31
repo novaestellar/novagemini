@@ -156,7 +156,7 @@ func accountInsert(label, cookie, note string) (int64, error) {
 // accountList 返回池里全部账号，按 id 升序。
 func accountList() []CookieAccount {
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override, impersonate
 		 FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil
