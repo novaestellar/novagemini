@@ -1,10 +1,16 @@
 package app
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -70,6 +76,13 @@ func artifactExt(mime string) string {
 // saveArtifact menulis byte artefak ke disk dan mengembalikan path relatif
 // terhadap mediaDir (mis. "2026-10-22/ab12cd34.jpg").
 func saveArtifact(data []byte, mime string) (string, error) {
+	// Google kadang mengembalikan frame kosong (placeholder) untuk image:
+	// kanvas 1024x1024 berwarna rata, 70-100 KB karena noise JPEG. Kalau
+	// disimpan, galeri menampilkan kotak putih dan request tercatat sukses
+	// padahal tidak ada gambar. Di sini diperlakukan sebagai kegagalan.
+	if strings.HasPrefix(mime, "image/") && looksBlank(data) {
+		return "", errBlankImage
+	}
 	day := time.Now().Format("2006-01-02")
 	dir := filepath.Join(mediaDir(), day)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -199,4 +212,49 @@ func handleMediaFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	http.ServeFile(w, r, abs)
+}
+
+// errBlankImage menandai artefak gambar yang isinya rata (placeholder).
+var errBlankImage = errors.New("upstream returned a blank image (placeholder), not a real picture")
+
+// looksBlank menjawab apakah gambar praktis satu warna.
+//
+// Ambangnya simpangan baku luminance < 6 (skala 0-255). Gambar asli apa pun
+// hampir selalu jauh di atas itu: foto uji di repo ini 65-69, sedangkan dua
+// placeholder yang masuk 30 Okt hanya 4 dan 6.
+func looksBlank(data []byte) bool {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+	b := img.Bounds()
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return false
+	}
+	sx, sy := b.Dx()/32, b.Dy()/32
+	if sx < 1 {
+		sx = 1
+	}
+	if sy < 1 {
+		sy = 1
+	}
+	var sum, sum2, n float64
+	for y := b.Min.Y; y < b.Max.Y; y += sy {
+		for x := b.Min.X; x < b.Max.X; x += sx {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			lum := (0.299*float64(r) + 0.587*float64(g) + 0.114*float64(bl)) / 257.0
+			sum += lum
+			sum2 += lum * lum
+			n++
+		}
+	}
+	if n == 0 {
+		return false
+	}
+	mean := sum / n
+	v := sum2/n - mean*mean
+	if v < 0 {
+		v = 0
+	}
+	return math.Sqrt(v) < 6
 }
