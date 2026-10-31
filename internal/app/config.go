@@ -2,7 +2,6 @@ package app
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"sync"
 )
@@ -144,14 +143,30 @@ func loadConfig(path string) error {
 var cfgPath string
 
 func saveConfigFile() error {
-	// loadConfig dipanggil dengan path kosong saat memakai default; dalam
-	// kondisi itu file yang benar adalah "config.json" di direktori kerja.
+	// loadConfig dipanggil dengan path kosong saat memakai default.
 	path := cfgPath
 	if path == "" {
 		path = "config.json"
 	}
-	_ = fmt.Sprintf("%s", path)
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	// Baca file yang ada dulu, lalu timpa HANYA field yang memang diubah di
+	// memori. Menulis seluruh struct akan mengembalikan nilai yang datang dari
+	// kv (mis. save_media_to_disk) ke default, dan itu pernah terjadi.
+	merged := map[string]interface{}{}
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &merged)
+	}
+	current, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	cur := map[string]interface{}{}
+	if err := json.Unmarshal(current, &cur); err != nil {
+		return err
+	}
+	for k, v := range cur {
+		merged[k] = v
+	}
+	b, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
 		return err
 	}
