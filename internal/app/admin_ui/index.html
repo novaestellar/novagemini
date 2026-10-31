@@ -1263,7 +1263,7 @@ const pages = {
                   <span class="actions">
                     <button class="btn muted" onclick="toggleProxy(${p.id})">${p.enabled ? '禁用' : '启用'}</button>
                     <button class="btn muted" onclick="resetProxy(${p.id})">重置</button>
-                    <button class="btn danger" onclick="delProxy(${p.id})">删除</button>
+                    <button class="btn danger" onclick="delProxy(${p.id})">${t('删除')}</button>
                   </span>
                 </td>
               </tr>`).join('') || '<tr><td colspan="7" class="empty">还没有代理。点「+ 添加代理」加一个。</td></tr>'}
@@ -1500,25 +1500,24 @@ const pages = {
 
         <div class="stack">
           <div class="card">
-            <h2>网络访问
+            <h2>${t('网络访问')}
               <span class="controls"><span class="mut" id="netStatus"></span></span>
             </h2>
-            <p class="lede">
-              默认只监听 <code>127.0.0.1</code>。要让局域网访问改成 <code>0.0.0.0</code>
-              （需要重启生效，且必须先设 <code>ADMIN_TOKEN</code>）。要让外网访问用隧道，
-              不需要重启，也不需要开端口。
+            <p class="lede">${t('默认只监听 127.0.0.1 。要让局域网访问改成 0.0.0.0')} <code>·</code>
+              ${t('（需要重启生效，且必须先设 ADMIN_TOKEN ）。要让外网访问用隧道，')}
+              ${t('不需要重启，也不需要开端口。')}
             </p>
             <div class="cfg-item">
-              <label for="netHost">监听地址</label>
+              <label for="netHost">${t('监听地址')}</label>
               <select id="netHost" onchange="saveHost()">
-                <option value="127.0.0.1">127.0.0.1 · 仅本机</option>
-                <option value="0.0.0.0">0.0.0.0 · 局域网</option>
+                <option value="127.0.0.1">${t('127.0.0.1 · 仅本机')}</option>
+                <option value="0.0.0.0">${t('0.0.0.0 · 局域网')}</option>
               </select>
             </div>
             <div class="cfg-item">
-              <label>隧道</label>
+              <label>${t('隧道')}</label>
               <div class="pg-opts">
-                <button class="btn primary" onclick="tunnelAction('start')">启动隧道</button>
+                <button class="btn primary" onclick="tunnelAction('start')">${t('启动隧道')}</button>
                 <button class="btn" onclick="tunnelAction('stop')">停止</button>
                 <span class="mut" id="tunnelState">未运行</span>
               </div>
@@ -1526,11 +1525,12 @@ const pages = {
             <p class="hint" id="tunnelUrl" style="display:none"></p>
           </div>
           <div class="card">
-            <h2>客户端 Key
-              <span class="controls"><button class="btn muted" onclick="createClientKey()">+ 新建 Key</button></span>
+            <h2>${t('客户端 Key')}
+              <span class="controls"><button class="btn muted" onclick="createClientKey()">+ ${t('新建 Key')}</button></span>
             </h2>
-            <p class="lede">
-              每个客户端一把key，可单独禁用或删除，也可以设每把key的 RPM / RPH 上限。
+            <p class="lede">${t('每个客户端一把key，可单独禁用或删除，也可以设每把key的 RPM / RPH 上限。')}
+              ${t('与上面的全局 API Key 并存，两者都能调用 /v1/* 。')}
+              <span style="display:none">每个客户端一把key，可单独禁用或删除，也可以设每把key的 RPM / RPH 上限。
               与上面的全局 API Key 并存，两者都能调用 <code>/v1/*</code>。
             </p>
             <div class="table-scroll short">
@@ -1540,10 +1540,10 @@ const pages = {
                   <col style="width:10%"><col style="width:10%"><col style="width:20%">
                 </colgroup>
                 <thead><tr>
-                  <th>名称</th><th>Key</th><th class="nw">RPM</th><th class="nw">RPH</th>
-                  <th class="nw">状态</th><th class="nw">操作</th>
+                  <th>${t('名称')}</th><th>Key</th><th class="nw">RPM</th><th class="nw">RPH</th>
+                  <th class="nw">${t('状态')}</th><th class="nw">${t('操作')}</th>
                 </tr></thead>
-                <tbody id="ckBody"><tr><td colspan="6" class="empty">载入中…</td></tr></tbody>
+                <tbody id="ckBody"><tr><td colspan="6" class="empty">${t('载入中…')}</td></tr></tbody>
               </table>
             </div>
             <p class="hint" id="ckHint" style="display:none"></p>
@@ -3057,7 +3057,7 @@ async function loadClientKeys() {
     const data = await api('api/client-keys');
     const items = data.items || [];
     if (!items.length) {
-      body.innerHTML = '<tr><td colspan="6" class="empty">还没有客户端 key。</td></tr>';
+      body.innerHTML = '<tr><td colspan="6" class="empty">' + t('还没有客户端 key。') + '</td></tr>';
       return;
     }
     body.innerHTML = items.map(k => `
@@ -3070,7 +3070,7 @@ async function loadClientKeys() {
           ? '<span class="badge ok">启用</span>'
           : '<span class="badge muted">停用</span>'}</td>
         <td class="nw"><span class="actions">
-          <button class="btn muted" onclick="rotateClientKey(${k.id})">轮换</button>
+          <button class="btn muted" onclick="rotateClientKey(${k.id})">${t('轮换')}</button>
           <button class="btn muted" onclick="toggleClientKey(${k.id}, ${k.enabled ? 'false' : 'true'})">${k.enabled ? '停用' : '启用'}</button>
           <button class="btn danger" onclick="deleteClientKey(${k.id})">删除</button>
         </span></td>
@@ -3299,6 +3299,28 @@ async function doLogin() {
 // I18N_EN 词典替换成英文；切回中文时从 ZH_ORIG 里恢复原文。渲染逻辑一行不用改，
 // 只在最外面套一层翻译。插值文案（带数字/名字的）不精确匹配、保持中文，属可接受。
 const I18N_EN = {
+  '确定删除代理': 'Delete proxy',
+  '确定删除账号': 'Delete account',
+  '绿色': 'Green',
+  '橙色': 'Amber',
+
+  '网络访问': 'Network access',
+  '监听地址': 'Bind address',
+  '隧道': 'Tunnel',
+  '启动隧道': 'Start tunnel',
+  '未运行': 'Not running',
+  '客户端 Key': 'Client keys',
+  '新建 Key': 'New key',
+  '还没有客户端 key。': 'No client keys yet.',
+  '0.0.0.0 · 局域网': '0.0.0.0 · LAN',
+  '127.0.0.1 · 仅本机': '127.0.0.1 · local only',
+  '默认只监听 127.0.0.1 。要让局域网访问改成 0.0.0.0': 'Listens on 127.0.0.1 by default. To allow LAN access, set 0.0.0.0',
+  '（需要重启生效，且必须先设 ADMIN_TOKEN ）。要让外网访问用隧道，': '(takes effect after restart, and ADMIN_TOKEN must be set first). For internet access use the tunnel,',
+  '不需要重启，也不需要开端口。': 'no restart and no open port needed.',
+  '每个客户端一把key，可单独禁用或删除，也可以设每把key的 RPM / RPH 上限。': 'One key per client; disable or delete each independently, with its own RPM / RPH limits.',
+  '与上面的全局 API Key 并存，两者都能调用 /v1/* 。': 'Coexists with the global API key above; both can call /v1/*.',
+  '停用': 'Disable',
+
   '基准测试': 'Benchmark',
   '基准测试 · 同一提示词打多轮': 'Benchmark · same prompt, many rounds',
   '每模型次数': 'Runs per model',
