@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 )
@@ -80,22 +81,22 @@ func defaultConfig() Config {
 	return Config{
 		SaveMediaToDisk: false,
 		MediaInlineKB:   1024,
-		Port:           8083,
-		AltPorts:       nil,
-		Host:           "0.0.0.0",
-		RetryAttempts:  3,
-		RetryDelaySec:  2,
-		RequestTimeout: 180,
-		GeminiBL:       "boq_gemini-web-uiserver_20261007.01_p0",
-		DefaultModel:   "gemini-3.6-flash",
-		LogRequests:    true,
-		CookieFile:     "",
-		Proxy:          "",
-		Impersonate:    "chrome_146",
-		DBPath:         "./data/gemini.db",
-		AdminToken:     "",
-		AdminEnabled:   true,
-		RetentionDays:  30,
+		Port:            8083,
+		AltPorts:        nil,
+		Host:            "0.0.0.0",
+		RetryAttempts:   3,
+		RetryDelaySec:   2,
+		RequestTimeout:  180,
+		GeminiBL:        "boq_gemini-web-uiserver_20261007.01_p0",
+		DefaultModel:    "gemini-3.6-flash",
+		LogRequests:     true,
+		CookieFile:      "",
+		Proxy:           "",
+		Impersonate:     "chrome_146",
+		DBPath:          "./data/gemini.db",
+		AdminToken:      "",
+		AdminEnabled:    true,
+		RetentionDays:   30,
 		// 单出口实测 80-180 次不等（连接策略和出口质量决定），静态 IP 上 188。
 		// RPH 取下沿 80 保守留量；按低速率跑的部署可以调高很多 ——
 		// 10 次/分钟连打 800 次、跨 110 分钟一次没被拦。
@@ -118,6 +119,7 @@ func defaultConfig() Config {
 }
 
 func loadConfig(path string) error {
+	cfgPath = path
 	cfg = defaultConfig()
 	if path == "" {
 		for _, p := range []string{"./config.json", os.ExpandEnv("$HOME/.config/novagemini/config.json")} {
@@ -135,4 +137,23 @@ func loadConfig(path string) error {
 		return err
 	}
 	return json.Unmarshal(data, &cfg)
+}
+
+// cfgPath diisi oleh loadConfig supaya perubahan dari panel bisa ditulis balik
+// ke file yang sama (mis. bind address).
+var cfgPath string
+
+func saveConfigFile() error {
+	// loadConfig dipanggil dengan path kosong saat memakai default; dalam
+	// kondisi itu file yang benar adalah "config.json" di direktori kerja.
+	path := cfgPath
+	if path == "" {
+		path = "config.json"
+	}
+	_ = fmt.Sprintf("%s", path)
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0644)
 }

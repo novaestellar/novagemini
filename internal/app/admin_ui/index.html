@@ -1500,6 +1500,32 @@ const pages = {
 
         <div class="stack">
           <div class="card">
+            <h2>网络访问
+              <span class="controls"><span class="mut" id="netStatus"></span></span>
+            </h2>
+            <p class="lede">
+              默认只监听 <code>127.0.0.1</code>。要让局域网访问改成 <code>0.0.0.0</code>
+              （需要重启生效，且必须先设 <code>ADMIN_TOKEN</code>）。要让外网访问用隧道，
+              不需要重启，也不需要开端口。
+            </p>
+            <div class="cfg-item">
+              <label for="netHost">监听地址</label>
+              <select id="netHost" onchange="saveHost()">
+                <option value="127.0.0.1">127.0.0.1 · 仅本机</option>
+                <option value="0.0.0.0">0.0.0.0 · 局域网</option>
+              </select>
+            </div>
+            <div class="cfg-item">
+              <label>隧道</label>
+              <div class="pg-opts">
+                <button class="btn primary" onclick="tunnelAction('start')">启动隧道</button>
+                <button class="btn" onclick="tunnelAction('stop')">停止</button>
+                <span class="mut" id="tunnelState">未运行</span>
+              </div>
+            </div>
+            <p class="hint" id="tunnelUrl" style="display:none"></p>
+          </div>
+          <div class="card">
             <h2>客户端 Key
               <span class="controls"><button class="btn muted" onclick="createClientKey()">+ 新建 Key</button></span>
             </h2>
@@ -2630,6 +2656,7 @@ async function switchPage(name, force = false) {
   if (name === 'settings') {
     await loadRtCfg();
     await loadClientKeys();
+    await loadNetwork();
   }
 }
 
@@ -3095,6 +3122,63 @@ async function deleteClientKey(id) {
   if (!confirm('删除这把 key？该客户端会立即失效。')) return;
   await fetch('api/client-keys/' + id, { method: 'DELETE', credentials: 'include' });
   await loadClientKeys();
+}
+
+// ── Network / tunnel ─────────────────────────────────────────────────────
+async function loadNetwork() {
+  try {
+    const d = await api('api/network');
+    const sel = document.getElementById('netHost');
+    if (sel) sel.value = d.host === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
+    const st = document.getElementById('netStatus');
+    if (st) st.textContent = d.host + ':' + d.port + (d.admin_token_set ? ' · token aktif' : ' · tanpa token');
+    const t = d.tunnel || {};
+    const ts = document.getElementById('tunnelState');
+    if (ts) ts.textContent = t.running ? ('运行中 · ' + (t.uptime_sec || 0) + 's') : (t.error ? ('失败: ' + t.error) : '未运行');
+    const tu = document.getElementById('tunnelUrl');
+    if (tu) {
+      if (t.url) {
+        tu.style.display = 'block';
+        tu.innerHTML = '公网地址: <code>' + escapeHtml(t.url) + '</code> ' +
+          '<button class="btn" onclick="navigator.clipboard.writeText(\'' + t.url + '\')">复制</button>';
+      } else {
+        tu.style.display = 'none';
+      }
+    }
+  } catch (e) {
+    const st = document.getElementById('netStatus');
+    if (st) st.textContent = 'load failed';
+  }
+}
+
+async function saveHost() {
+  const host = document.getElementById('netHost').value;
+  const r = await fetch('api/network', {
+    method: 'PATCH', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ host: host }),
+  });
+  const j = await r.json();
+  const st = document.getElementById('netStatus');
+  if (!r.ok) {
+    if (st) st.textContent = j.error || 'gagal';
+    await loadNetwork();
+    return;
+  }
+  if (st) st.textContent = 'tersimpan · 重启后生效 (' + j.host + ')';
+}
+
+async function tunnelAction(action) {
+  const st = document.getElementById('tunnelState');
+  if (st) st.textContent = action === 'start' ? '启动中…' : '停止中…';
+  const r = await fetch('api/tunnel', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: action }),
+  });
+  const j = await r.json();
+  if (!r.ok && st) st.textContent = j.error || 'gagal';
+  await loadNetwork();
 }
 
 function renderShell() {
