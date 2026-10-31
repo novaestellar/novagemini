@@ -182,7 +182,7 @@ func accountList() []CookieAccount {
 func accountByID(id int64) *CookieAccount {
 	var a CookieAccount
 	err := getDB().QueryRow(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override, impersonate
 		 FROM accounts WHERE id=?`, id).
 		Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
 			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount,
@@ -567,7 +567,7 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 	// 出口就按"无偏好"选了；等换号换到好号，出口已经定死 —— 于是好号的出口
 	// 粘性被坏号带偏。实测 1 好 2 坏时出口在两个代理间对半分。
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, auth_user, tier_override, impersonate, impersonate
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, auth_user, tier_override, impersonate
 		 FROM accounts WHERE status='enabled' ORDER BY fail_count ASC, last_used_at ASC, id ASC`)
 	if err != nil {
 		return nil, false

@@ -114,7 +114,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     last_error    TEXT NOT NULL DEFAULT '',
     fail_count    INTEGER NOT NULL DEFAULT 0,     -- 连续失败次数（成功归零）
     proxy_id      INTEGER NOT NULL DEFAULT 0,     -- 绑定的出口，0 = 还没绑
-    auth_user     INTEGER NOT NULL DEFAULT 0      -- 同一浏览器 profile 内的账号序号（authuser）
+    auth_user     INTEGER NOT NULL DEFAULT 0,     -- 同一浏览器 profile 内的账号序号（authuser）
+    impersonate   TEXT NOT NULL DEFAULT ''        -- 账号级 TLS 指纹（空 = 用全局）
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_pick ON accounts(status, last_used_at);
 
@@ -203,10 +204,10 @@ func getDB() *dbx {
 			_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN tier_override TEXT NOT NULL DEFAULT ''`)
 
 			// Sidik jari per akun: sesi dibuat oleh browser tertentu, dan memakai
-	// sidik jari lain membuat Google menganggapnya sesi curian.
-	_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN impersonate TEXT NOT NULL DEFAULT ''`)
+			// sidik jari lain membuat Google menganggapnya sesi curian.
+			_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN impersonate TEXT NOT NULL DEFAULT ''`)
 
-	// Kunci per klien: satu baris per klien, dengan kuota sendiri.
+			// Kunci per klien: satu baris per klien, dengan kuota sendiri.
 			_, _ = conn.Exec(`CREATE TABLE IF NOT EXISTS client_keys (
 		id            INTEGER PRIMARY KEY AUTOINCREMENT,
 		name          TEXT NOT NULL DEFAULT '',

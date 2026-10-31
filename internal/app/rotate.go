@@ -215,8 +215,16 @@ func tryRotate1PSIDTS(id int64, cookie, proxyURL string) (string, []string, erro
 	c2, names, err := rotate1PSIDTS(cookie, proxyURL)
 	note1PSIDTSAttempt(id, err)
 	if err != nil {
+		// 401 dari RotateCookies berarti sesi ini dipegang perangkat lain.
+		// Setelah tiga kali beruntun, rotasi diserahkan ke browser alih-alih
+		// diulang terus - cara yang sama dipakai alat berbasis OAuth: kredensial
+		// yang dicabut ditandai "perlu auth ulang", bukan di-retry.
+		if strings.Contains(err.Error(), "HTTP 401") || strings.Contains(err.Error(), "HTTP 403") {
+			noteRotate401(id)
+		}
 		return cookie, nil, err
 	}
+	clearRotate401(id)
 	return c2, names, nil
 }
 
@@ -268,9 +276,6 @@ func rotate1PSIDTS(cookie, proxyURL string) (string, []string, error) {
 		return cookie, nil, err
 	}
 	if status == 401 || status == 403 {
-		// 401 berulang = sesi ini memang dipegang perangkat lain. Setelah tiga
-		// kali, serahkan rotasi ke browser alih-alih mengulanginya.
-		noteRotate401(id)
 		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS 返回 HTTP %d（Chrome 导出的 cookie 可能受设备绑定限制，建议用 Firefox 重新导出）: %s",
 			status, truncate(string(respBody), 120))
 	}
@@ -278,7 +283,6 @@ func rotate1PSIDTS(cookie, proxyURL string) (string, []string, error) {
 		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS 返回 HTTP %d: %s", status, truncate(string(respBody), 120))
 	}
 	merged := mergeSetCookie(cookie, setCookie)
-	clearRotate401(id)
 	return merged, setCookieNames(setCookie), nil
 }
 
