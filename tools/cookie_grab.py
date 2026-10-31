@@ -333,14 +333,29 @@ def verify(header: str, timeout: int = 45) -> tuple[bool, str]:
             "Accept-Encoding": "identity",
         },
     )
+    # Redirect TIDAK boleh diikuti. Sebelumnya urlopen mengikuti 302 ke
+    # accounts.google.com lalu menemukan string "SNlM0e" di halaman login,
+    # sehingga sesi yang sudah mati dilaporkan "LOGIN". Itu yang membuat
+    # refresh terlihat berhasil padahal cookie-nya sudah tidak berlaku.
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):  # noqa: D401
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirect)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with opener.open(req, timeout=timeout) as r:
             body = r.read()
             if b"SNlM0e" in body:
                 return True, f"HTTP {r.status}, sesi hidup (SNlM0e ada)"
+
             guest = b"accounts.google.com" in body
             return False, (f"HTTP {r.status}, tidak ada SNlM0e"
                            f"{' — Google menganggap tamu' if guest else ''}")
+    except urllib.error.HTTPError as e:
+        if e.code in (301, 302, 303, 307, 308):
+            loc = e.headers.get("Location", "")
+            return False, f"HTTP {e.code} -> {loc[:60]} (sesi mati, bukan login)"
+        return False, f"HTTP {e.code}"
     except Exception as e:
         return False, f"{type(e).__name__}: {str(e)[:120]}"
 
