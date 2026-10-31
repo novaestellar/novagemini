@@ -258,7 +258,13 @@ def import_to_server(base, api_key, header, profile_name, auth_user=None):
     targets = [a for a in items if auth_user is None or a.get("auth_user") == auth_user]
     written = []
     for a in targets:
-        body = json.dumps({"cookie": header, "impersonate": "firefox_147"}).encode()
+        # rotate_disabled=1: akun ini "browser-owned". Server tidak boleh
+        # memutar tokennya, karena browser memegang sesi yang sama dan dua
+        # pemutar akan saling membatalkan. Persis itu yang menghabiskan 10 akun
+        # sebelumnya: rotasi server mematikan sesi browser, lalu resync terus
+        # menyalin cookie yang sudah mati.
+        body = json.dumps({"cookie": header, "impersonate": "firefox_147",
+                           "rotate_disabled": True}).encode()
         req = urllib.request.Request(f"{url}/{a['id']}", data=body, method="PATCH",
                                      headers={"Content-Type": "application/json"})
         try:
