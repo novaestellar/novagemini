@@ -268,6 +268,9 @@ func rotate1PSIDTS(cookie, proxyURL string) (string, []string, error) {
 		return cookie, nil, err
 	}
 	if status == 401 || status == 403 {
+		// 401 berulang = sesi ini memang dipegang perangkat lain. Setelah tiga
+		// kali, serahkan rotasi ke browser alih-alih mengulanginya.
+		noteRotate401(id)
 		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS 返回 HTTP %d（Chrome 导出的 cookie 可能受设备绑定限制，建议用 Firefox 重新导出）: %s",
 			status, truncate(string(respBody), 120))
 	}
@@ -275,6 +278,7 @@ func rotate1PSIDTS(cookie, proxyURL string) (string, []string, error) {
 		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS 返回 HTTP %d: %s", status, truncate(string(respBody), 120))
 	}
 	merged := mergeSetCookie(cookie, setCookie)
+	clearRotate401(id)
 	return merged, setCookieNames(setCookie), nil
 }
 
@@ -455,6 +459,43 @@ func rotateDo(method, url string, headers map[string]string, body []byte, proxyU
 //
 // 失败**不计入健康度**：保活打的是 accounts.google.com，跟对话能不能用是两码事，
 // 网络抖一下就把号标成坏的，会让它在挑号时沉底，反而伤可用性。
+// rotate401Streak menghitung berapa kali berturut-turut RotateCookies menjawab
+// 401 (sesi dipegang browser / terikat perangkat). Setelah tiga kali, akun itu
+// diserahkan kembali ke browser: rotasi dimatikan untuk akun tersebut, bukan
+// dipaksa berulang-ulang. Ini meniru cara kerja alat lain yang memakai token
+// OAuth - di sana pun kredensial yang dicabut ditandai "perlu auth ulang",
+// bukan diulang terus.
+var (
+	rotate401Mu     sync.Mutex
+	rotate401Streak = map[int64]int{}
+)
+
+func noteRotate401(accountID int64) {
+	if accountID <= 0 {
+		return
+	}
+	rotate401Mu.Lock()
+	rotate401Streak[accountID]++
+	n := rotate401Streak[accountID]
+	rotate401Mu.Unlock()
+	if n < 3 {
+		return
+	}
+	_, err := getDB().Exec(
+		`UPDATE accounts SET rotate_disabled=1,
+		 last_error='sesi dipegang browser (401 berulang) - rotasi diserahkan ke browser'
+		 WHERE id=? AND rotate_disabled=0`, accountID)
+	if err == nil {
+		logf("[rotate] akun #%d: 401 tiga kali berturut, rotasi dimatikan (browser-owned)", accountID)
+	}
+}
+
+func clearRotate401(accountID int64) {
+	rotate401Mu.Lock()
+	delete(rotate401Streak, accountID)
+	rotate401Mu.Unlock()
+}
+
 func rotateAllAccounts() time.Duration {
 	next := defaultRotateInterval
 	for _, a := range accountList() {
