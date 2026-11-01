@@ -184,12 +184,53 @@ func startOrDedupMediaJob(model, prompt string, images []pendingUpload, baseURL,
 // context.Background(), bukan request context, supaya klien yang pergi
 // (9router keburu timeout) tidak membatalkan job yang sebenarnya masih jalan.
 // Bandingkan dengan jalur /v1/chat yang justru ingin dibatalkan saat klien pergi.
+
+// mediaPoolHealthy menjawab apakah ada akun yang baru saja terbukti hidup.
+//
+// Kenapa dipakai sebelum job jalan: pekerja media wajib lewat sesi web Gemini,
+// dan pool kita bisa berisi akun yang sesinya sudah dicabut Google. Tanpa
+// pemeriksaan ini, job menghabiskan slot (maksimal 4 bersamaan) hanya untuk
+// memutar akun yang semuanya mati - persis gejala "job menggantung 300 detik
+// padahal sebelumnya selesai 140 detik". Lebih baik gagal cepat dengan alasan
+// yang bisa ditindaklanjuti daripada menahan slot 40 menit.
+func mediaPoolHealthy(maxAge time.Duration) (bool, string) {
+	accounts := accountList()
+	if len(accounts) == 0 {
+		return true, "" // tanpa akun, jalur anonim yang menangani
+	}
+	now := time.Now().Unix()
+	for _, a := range accounts {
+		if a.Status != "enabled" {
+			continue
+		}
+		if a.LastOkAt > 0 && now-a.LastOkAt < int64(maxAge.Seconds()) {
+			return true, ""
+		}
+	}
+	// Tidak ada yang baru sukses. Kalau ada akun yang belum pernah dipakai sama
+	// sekali, izinkan satu percobaan - jangan menghukum pool yang baru diisi.
+	for _, a := range accounts {
+		if a.Status == "enabled" && a.LastOkAt == 0 {
+			return true, ""
+		}
+	}
+	return false, "tidak ada akun sehat di pool (semua sesi terakhir sukses > 15 menit lalu) - " +
+		"login ulang di browser lalu jalankan harvest"
+}
+
 func runMediaJob(j *mediaJob, images []pendingUpload, baseURL string) {
 	// Tunggu slot dulu; selama menunggu status tetap "queued" (bukan in_progress).
 	mediaJobSemaphore <- struct{}{}
 	defer func() { <-mediaJobSemaphore }()
 
 	setMediaJobStatus(j, "in_progress", "")
+
+	// Gerbang kesehatan pool: gagal cepat lebih baik daripada menahan slot.
+	if ok, why := mediaPoolHealthy(15 * time.Minute); !ok {
+		recordRequest("media.jobs", j.Model, j.Prompt, "", nil, 503, why, false)
+		finishMediaJob(j, nil, "", why)
+		return
+	}
 
 	_, mc, err := resolveModel(j.Model)
 	if err != nil {

@@ -250,12 +250,20 @@ def harvest(profile_name, keep_open=False):
             shutil.rmtree(prof, ignore_errors=True)
 
 
-def import_to_server(base, api_key, header, profile_name, auth_user=None):
+def import_to_server(base, api_key, header, profile_name, auth_user=None, accounts=None):
     """Tulis cookie ke semua akun yang cocok (atau yang auth_user-nya disebut)."""
     url = base.rstrip("/") + "/admin/api/cookies"
     data = json.load(urllib.request.urlopen(url, timeout=20))
     items = data.get("items", [])
-    targets = [a for a in items if auth_user is None or a.get("auth_user") == auth_user]
+    if accounts:
+        targets = [a for a in items if a["id"] in accounts]
+    elif auth_user is not None:
+        targets = [a for a in items if a.get("auth_user") == auth_user]
+    else:
+        # Tanpa target, menulis ke semua akun berarti menimpa sesi akun lain
+        # dengan cookie milik satu akun. Itu pernah hampir merusak novaestellar.
+        print("    dibatalkan: sebutkan target (--account ID atau --auth-user N)")
+        return []
     written = []
     for a in targets:
         # rotate_disabled=1: akun ini "browser-owned". Server tidak boleh
@@ -284,6 +292,8 @@ def main():
                     help="tulis hasilnya ke novagemini")
     ap.add_argument("--auth-user", type=int, default=None,
                     help="hanya akun dengan auth_user ini")
+    ap.add_argument("--account", default="",
+                    help="id akun tujuan, dipisah koma (wajib untuk --import)")
     args = ap.parse_args()
 
     print(f"  profil: {args.profile}")
@@ -305,8 +315,9 @@ def main():
         print("  tidak diimpor: sesi ini tidak lolos uji, mengimpor hanya akan menambah baris mati")
         return 2
 
+    accounts = {int(x) for x in args.account.split(",") if x.strip().isdigit()}
     if args.do_import:
-        written = import_to_server(args.base, args.api_key, header, args.profile, args.auth_user)
+        written = import_to_server(args.base, args.api_key, header, args.profile, args.auth_user, accounts)
         print(f"  diimpor ke {len(written)} akun: {written}")
     else:
         print("  (mode uji: tidak menulis apa pun; tambahkan --import untuk menyimpan)")

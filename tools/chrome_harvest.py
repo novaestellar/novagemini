@@ -35,9 +35,13 @@ def _wd(method, path, body=None, timeout=90):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(f"http://127.0.0.1:{WD_PORT}{path}", data=data, method=method,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
-        return json.loads(raw) if raw else {}
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"HTTP {e.code} dari chromedriver: {body[:300]}") from None
 
 
 def snapshot(profile_name):
@@ -133,7 +137,9 @@ def check(profile_name, url="https://gemini.google.com/app", live=False):
                 "binary": CHROME,
                 "args": ["--headless=new", "--no-first-run", "--no-default-browser-check",
                          "--disable-sync",
-                         (f"--user-data-dir={USER_DATA}" if live else f"--user-data-dir={prof}")],
+                         (f"--user-data-dir={USER_DATA}" if live else f"--user-data-dir={prof}"),
+                         # mode live memakai root User Data, jadi profil harus disebut
+                         *([f"--profile-directory={profile_name}"] if live else [])],
             },
         }}}
         session = _wd("POST", "/session", caps, timeout=120)["value"]["sessionId"]
@@ -155,7 +161,7 @@ def check(profile_name, url="https://gemini.google.com/app", live=False):
         shutil.rmtree(prof, ignore_errors=True)
 
 
-def import_to_server(base, header, auth_user=None):
+def import_to_server(base, header, auth_user=None, accounts=None):
     """Tulis cookie Chrome ke akun yang cocok, sebagai browser-owned.
 
     Chrome 的新会话多数是 app-bound（device-bound）：只有创建它的浏览器能
@@ -165,7 +171,15 @@ def import_to_server(base, header, auth_user=None):
     url = base.rstrip("/") + "/admin/api/cookies"
     data = json.load(urllib.request.urlopen(url, timeout=20))
     items = data.get("items", [])
-    targets = [a for a in items if auth_user is None or a.get("auth_user") == auth_user]
+    if accounts:
+        targets = [a for a in items if a["id"] in accounts]
+    elif auth_user is not None:
+        targets = [a for a in items if a.get("auth_user") == auth_user]
+    else:
+        # Menulis tanpa target = menimpa sesi akun lain dengan cookie satu
+        # akun. Itu hampir merusak novaestellar; sekarang ditolak.
+        print("    dibatalkan: sebutkan target (--account ID atau --auth-user N)")
+        return []
     written = []
     for a in targets:
         body = json.dumps({"cookie": header, "impersonate": "chrome_146",
@@ -188,9 +202,27 @@ def main():
     ap.add_argument("--import", dest="do_import", action="store_true",
                     help="tulis cookie profil yang hidup ke novagemini")
     ap.add_argument("--auth-user", type=int, default=None)
+    ap.add_argument("--account", default="",
+                    help="id akun tujuan, dipisah koma (wajib untuk --import)")
+    ap.add_argument("--wait", type=int, default=0,
+                    help="tunggu sampai Chrome tertutup (detik), lalu harvest otomatis")
     ap.add_argument("--live", action="store_true",
                     help="pakai folder profil asli (Chrome harus tertutup); perlu untuk cookie app-bound")
     args = ap.parse_args()
+    accounts = {int(x) for x in args.account.split(",") if x.strip().isdigit()}
+
+    if args.wait:
+        # Chrome harus benar-benar tertutup; menutupnya dari luar sering langsung
+        # dihidupkan lagi oleh background mode. Jadi kita tunggu, bukan memaksa.
+        deadline = time.time() + args.wait
+        while time.time() < deadline:
+            if not chrome_running():
+                print("  Chrome tertutup — lanjut harvest")
+                break
+            print(f"  menunggu Chrome ditutup... ({int(deadline - time.time())}s)", flush=True)
+            time.sleep(10)
+        else:
+            raise SystemExit("Chrome tidak tertutup sampai batas waktu")
 
     profiles = args.profiles
     if not profiles:
@@ -213,7 +245,7 @@ def main():
         print(f"  profil dengan sesi hidup: {[p for p, _ in live]}")
         if args.do_import:
             for prof_name, header in live:
-                written = import_to_server(args.base, header, args.auth_user)
+                written = import_to_server(args.base, header, args.auth_user, accounts)
                 print(f"  {prof_name}: diimpor ke {len(written)} akun {written}")
         os.makedirs(os.path.join(tempfile.gettempdir(), "opencode"), exist_ok=True)
         out = os.path.join(tempfile.gettempdir(), "opencode", "chrome-live-headers.json")
