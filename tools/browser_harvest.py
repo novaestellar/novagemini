@@ -94,6 +94,34 @@ class Marionette:
                 return reply.get("result")
 
 
+def quit_firefox():
+    """Minta Firefox berhenti dengan sopan.
+
+    Memaksa mati (taskkill /F) meninggalkan parent.lock di profil, dan Firefox
+    berikutnya menolak membuka profil yang dianggap masih dipakai - itu yang
+    membuat Firefox tidak bisa dibuka. taskkill tanpa /F mengirim WM_CLOSE.
+    """
+    for extra in ([], ["/F"]):
+        try:
+            subprocess.run(["taskkill", "/IM", "firefox.exe", "/T"] + extra,
+                           capture_output=True, timeout=60)
+        except Exception:
+            pass
+        time.sleep(2)
+        if not _firefox_alive():
+            return
+    time.sleep(2)
+
+
+def _firefox_alive():
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq firefox.exe"],
+                             capture_output=True, text=True, timeout=15).stdout
+        return "firefox.exe" in out
+    except Exception:
+        return False
+
+
 def snapshot_profile(name):
     src = os.path.join(PROFILE_DIR, name)
     if not os.path.isdir(src):
