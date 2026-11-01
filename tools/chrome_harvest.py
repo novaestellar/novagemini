@@ -182,7 +182,7 @@ def import_to_server(base, header, auth_user=None, accounts=None):
         return []
     written = []
     for a in targets:
-        body = json.dumps({"cookie": header, "impersonate": "chrome_146",
+        body = json.dumps({"cookie": header, "impersonate": "chrome_146", "auth_user": 0,  # sesi per profil = indeks 0
                            "rotate_disabled": True}).encode()
         req = urllib.request.Request(f"{url}/{a['id']}", data=body, method="PATCH",
                                      headers={"Content-Type": "application/json"})

@@ -299,7 +299,7 @@ def import_to_server(base, api_key, header, profile_name, auth_user=None, accoun
         # pemutar akan saling membatalkan. Persis itu yang menghabiskan 10 akun
         # sebelumnya: rotasi server mematikan sesi browser, lalu resync terus
         # menyalin cookie yang sudah mati.
-        body = json.dumps({"cookie": header, "impersonate": "firefox_147",
+        body = json.dumps({"cookie": header, "impersonate": "firefox_147", "auth_user": 0,  # sesi per profil = indeks 0
                            "rotate_disabled": True}).encode()
         req = urllib.request.Request(f"{url}/{a['id']}", data=body, method="PATCH",
                                      headers={"Content-Type": "application/json"})
