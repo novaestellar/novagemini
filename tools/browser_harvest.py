@@ -206,8 +206,17 @@ def probe_login(header):
     op = urllib.request.build_opener(NoRedirect)
     try:
         with op.open(req, timeout=40) as r:
-            body = r.read(20000)
-            return (b"SNlM0e" in body), f"HTTP {r.status}"
+            body = r.read(60000)
+            text = body.decode("utf-8", "replace")
+            if b"SNlM0e" in body:
+                return True, f"HTTP {r.status}"
+            # Cadangan: halaman aplikasi Gemini memuat email akun yang login.
+            # Tanpa cadangan ini, sesi yang sehat bisa dilaporkan mati hanya
+            # karena halaman menyajikan bentuk lain (pernah terjadi pada akun
+            # yang justru melayani request dengan baik).
+            if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text):
+                return True, f"HTTP {r.status} (email akun terlihat di halaman)"
+            return False, f"HTTP {r.status}"
     except urllib.error.HTTPError as e:
         return False, f"HTTP {e.code} -> {e.headers.get('Location','')[:60]}"
     except Exception as e:  # noqa: BLE001

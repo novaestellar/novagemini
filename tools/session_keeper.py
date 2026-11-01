@@ -36,6 +36,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser_harvest as bh  # noqa: E402
+import cookie_grab as cg  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAP_PATH = os.path.join(HERE, "session-map.json")
@@ -120,6 +121,8 @@ def main():
     ap.add_argument("--base", default="http://127.0.0.1:8083")
     ap.add_argument("--api-key", default="")
     ap.add_argument("--dry", action="store_true")
+    ap.add_argument("--visit", action="store_true",
+                    help="buka tiap profil headless dulu (default tidak: cukup baca cookie)")
     args = ap.parse_args()
 
     m = load_map()
@@ -136,35 +139,37 @@ def main():
     # sedang terbuka. Menolak jalan hanya karena browser terbuka akan membuat
     # penjaga ini hampir tidak pernah berjalan.
     ff_open = firefox_running()
-    if ff_open:
-        print("  Firefox sedang terbuka — kunjungan dilewati, cookie dibaca dari salinan\n")
+    do_visit = args.visit and not ff_open
+    if do_visit:
+        print("  kunjungan AAKTIF: tiap profil dibuka headless dulu\n")
     else:
-        print("  Firefox tertutup — tiap profil akan dikunjungi dulu\n")
+        print("  mode sinkron saja: cookie dibaca dari database profil, tanpa membuka browser\n")
 
     print(f"  memproses {len(profiles)} profil\n")
     summary = []
     for p in profiles:
         targets = m.get(p, [])
-        if not ff_open:
+        if do_visit:
             okv, detail = visit(p)
             if not okv:
                 print(f"  {p:26s} kunjungan gagal: {detail}")
                 summary.append((p, "visit-fail", targets))
                 continue
         try:
+            # Baca lewat browser (WebDriver), bukan dari cookies.sqlite.
+            # Alasannya terukur hari ini: sebagian cookie Google bersifat
+            # session-only dan TIDAK pernah ditulis ke disk, sehingga pembacaan
+            # SQLite menghasilkan 302 untuk sesi yang sebenarnya hidup. Browser
+            # yang membuka profilnya sendiri melihat set lengkap dari memori.
             header, table, _ = bh.harvest_gecko(p)
         except Exception as e:  # noqa: BLE001
-            print(f"  {p:26s} baca cookie gagal: {type(e).__name__}")
+            print(f"  {p:26s} baca cookie gagal: {type(e).__name__}: {str(e)[:40]}")
             summary.append((p, "read-fail", targets))
             continue
         ok, why = bh.probe_login(header)
         if not ok:
-            # Baca ulang sekali: saat browser sedang memutar cookie, salinan
-            # bisa terbaca setengah jalan (SID baru + 1PSIDTS lama). Percobaan
-            # kedua hampir selalu konsisten. Kita TIDAK menulis kalau tetap
-            # gagal - lebih baik melewatkan satu putaran daripada menulis
-            # cookie basi ke akun yang sehat.
-            time.sleep(3)
+            # Sekali lagi: pembacaan pertama bisa kebetulan menangkap state
+            # setengah jalan. Kita tidak pernah menulis kalau tetap gagal.
             try:
                 header, table, _ = bh.harvest_gecko(p)
                 ok, why = bh.probe_login(header)
