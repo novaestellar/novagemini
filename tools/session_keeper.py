@@ -129,19 +129,28 @@ def main():
         print("  Contoh: {\"p3OS0Uyy.Profile 1\": [8]}")
         return 1
 
-    if firefox_running():
-        print("  Firefox sedang berjalan — tutup dulu, profil asli harus bebas.")
-        return 3
+    # Firefox boleh tetap terbuka. Kalau tertutup, profil asli dikunjungi dulu
+    # supaya browser sendiri yang memutar cookie-nya; kalau sedang terbuka,
+    # langkah itu dilewati (profil sedang dipakai) dan cookie dibaca dari
+    # salinan - itu tetap bekerja, terbukti saat memeriksa 11 jendela yang
+    # sedang terbuka. Menolak jalan hanya karena browser terbuka akan membuat
+    # penjaga ini hampir tidak pernah berjalan.
+    ff_open = firefox_running()
+    if ff_open:
+        print("  Firefox sedang terbuka — kunjungan dilewati, cookie dibaca dari salinan\n")
+    else:
+        print("  Firefox tertutup — tiap profil akan dikunjungi dulu\n")
 
     print(f"  memproses {len(profiles)} profil\n")
     summary = []
     for p in profiles:
         targets = m.get(p, [])
-        okv, detail = visit(p)
-        if not okv:
-            print(f"  {p:26s} kunjungan gagal: {detail}")
-            summary.append((p, "visit-fail", targets))
-            continue
+        if not ff_open:
+            okv, detail = visit(p)
+            if not okv:
+                print(f"  {p:26s} kunjungan gagal: {detail}")
+                summary.append((p, "visit-fail", targets))
+                continue
         try:
             header, table, _ = bh.harvest_gecko(p)
         except Exception as e:  # noqa: BLE001
@@ -149,6 +158,18 @@ def main():
             summary.append((p, "read-fail", targets))
             continue
         ok, why = bh.probe_login(header)
+        if not ok:
+            # Baca ulang sekali: saat browser sedang memutar cookie, salinan
+            # bisa terbaca setengah jalan (SID baru + 1PSIDTS lama). Percobaan
+            # kedua hampir selalu konsisten. Kita TIDAK menulis kalau tetap
+            # gagal - lebih baik melewatkan satu putaran daripada menulis
+            # cookie basi ke akun yang sehat.
+            time.sleep(3)
+            try:
+                header, table, _ = bh.harvest_gecko(p)
+                ok, why = bh.probe_login(header)
+            except Exception:
+                pass
         if not ok:
             print(f"  {p:26s} sesi tidak hidup — {why}")
             summary.append((p, "dead", targets))

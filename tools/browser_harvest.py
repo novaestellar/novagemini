@@ -122,6 +122,21 @@ def _firefox_alive():
         return False
 
 
+def kill_stale_drivers():
+    """Bersihkan driver yang tertinggal.
+
+    Geckodriver memakai port tetap (2828). Kalau satu instance sebelumnya masih
+    hidup, instance berikutnya gagal mengikat port dan semua panggilan WebDriver
+    berakhir HTTPError - persis yang terjadi saat penjaga dijalankan berulang.
+    """
+    for name in ("geckodriver.exe", "chromedriver.exe"):
+        try:
+            subprocess.run(["taskkill", "/IM", name, "/F"], capture_output=True, timeout=30)
+        except Exception:
+            pass
+    time.sleep(1)
+
+
 def snapshot_profile(name):
     src = os.path.join(PROFILE_DIR, name)
     if not os.path.isdir(src):
@@ -214,7 +229,8 @@ def harvest_gecko(profile_name):
     if not os.path.exists(GECKODRIVER):
         raise SystemExit(f"geckodriver tidak ada di {GECKODRIVER}")
     prof = snapshot_profile(profile_name)
-    proc = subprocess.Popen([GECKODRIVER, "--port", str(WD_PORT)],
+    kill_stale_drivers()
+    proc = subprocess.Popen([GECKODRIVER, f"--port={WD_PORT}"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     session = None
