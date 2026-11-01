@@ -144,6 +144,12 @@ func getUploadTokens(cookie, proxyURL string, ctxs ...context.Context) (pushID, 
 // cookie 传空串就是匿名抓（页面照样返回，只是没有登录态字段）。
 func fetchAppPage(cookie, proxyURL string, ctxs ...context.Context) ([]byte, error) {
 	ctx := optCtx(ctxs)
+	// Halaman /app harus dikirim dengan sidik jari yang sama seperti request
+	// lain untuk akun itu; kalau tidak, token diambil dengan klien global dan
+	// bisa ditolak saat dipakai di jalur akun.
+	if prof := impersonateForCookie(cookie); prof != "" {
+		ctx = withTLSProfile(ctx, prof)
+	}
 	pageTarget := appPageURL(cookie)
 	headers := map[string]string{
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

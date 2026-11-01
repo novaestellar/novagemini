@@ -45,6 +45,9 @@ def snapshot(profile_name):
     if not os.path.isdir(src):
         raise SystemExit(f"profil tidak ada: {src}")
     dst = tempfile.mkdtemp(prefix="nmchrome-")
+    # Catatan: menyalin "Local State" ke user-data-dir tiruan membuat Chrome
+    # menolak start (HTTP 500) karena kunci app-bound-nya terikat path asli.
+    # Untuk cookie app-bound, pakai mode --live (profil asli, Chrome harus tutup).
     skip = {"Cache", "Code Cache", "GPUCache", "GrShaderCache", "ShaderCache",
             "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "component_crx_cache",
             "extensions_crx_cache", "Crashpad", "BrowserMetrics", "Safe Browsing"}
@@ -94,8 +97,24 @@ def build_header(cookies):
     return "; ".join(f"{k}={v[1]}" for k, v in best.items()), {k: v[1] for k, v in best.items()}
 
 
-def check(profile_name, url="https://gemini.google.com/app"):
-    prof = snapshot(profile_name)
+def chrome_running():
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq chrome.exe"],
+                             capture_output=True, text=True, timeout=15).stdout
+        return "chrome.exe" in out
+    except Exception:
+        return False
+
+
+def check(profile_name, url="https://gemini.google.com/app", live=False):
+    if live:
+        # Profil asli: cookie app-bound hanya bisa didekripsi di path ini.
+        # Syaratnya Chrome tidak sedang berjalan.
+        if chrome_running():
+            raise SystemExit("Chrome masih jalan — tutup dulu untuk mode --live")
+        prof = os.path.join(USER_DATA, profile_name)
+    else:
+        prof = snapshot(profile_name)
     proc = subprocess.Popen([CHROMEDRIVER, f"--port={WD_PORT}"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -113,7 +132,8 @@ def check(profile_name, url="https://gemini.google.com/app"):
             "goog:chromeOptions": {
                 "binary": CHROME,
                 "args": ["--headless=new", "--no-first-run", "--no-default-browser-check",
-                         "--disable-sync", f"--user-data-dir={prof}"],
+                         "--disable-sync",
+                         (f"--user-data-dir={USER_DATA}" if live else f"--user-data-dir={prof}")],
             },
         }}}
         session = _wd("POST", "/session", caps, timeout=120)["value"]["sessionId"]
@@ -135,10 +155,41 @@ def check(profile_name, url="https://gemini.google.com/app"):
         shutil.rmtree(prof, ignore_errors=True)
 
 
+def import_to_server(base, header, auth_user=None):
+    """Tulis cookie Chrome ke akun yang cocok, sebagai browser-owned.
+
+    Chrome 的新会话多数是 app-bound（device-bound）：只有创建它的浏览器能
+    续期。所以这里一定带 rotate_disabled=1 —— 服务端一旦也去轮换，两边会
+    互相作废，这正是十个 Firefox 账号昨天集体失效的原因。
+    """
+    url = base.rstrip("/") + "/admin/api/cookies"
+    data = json.load(urllib.request.urlopen(url, timeout=20))
+    items = data.get("items", [])
+    targets = [a for a in items if auth_user is None or a.get("auth_user") == auth_user]
+    written = []
+    for a in targets:
+        body = json.dumps({"cookie": header, "impersonate": "chrome_146",
+                           "rotate_disabled": True}).encode()
+        req = urllib.request.Request(f"{url}/{a['id']}", data=body, method="PATCH",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=20)
+            written.append(a["id"])
+        except urllib.error.HTTPError as e:
+            print(f"    #{a['id']} gagal: {e.code}")
+    return written
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profiles", nargs="*", default=None)
     ap.add_argument("--url", default="https://gemini.google.com/app")
+    ap.add_argument("--base", default="http://127.0.0.1:8083")
+    ap.add_argument("--import", dest="do_import", action="store_true",
+                    help="tulis cookie profil yang hidup ke novagemini")
+    ap.add_argument("--auth-user", type=int, default=None)
+    ap.add_argument("--live", action="store_true",
+                    help="pakai folder profil asli (Chrome harus tertutup); perlu untuk cookie app-bound")
     args = ap.parse_args()
 
     profiles = args.profiles
@@ -150,7 +201,7 @@ def main():
     live = []
     for p in profiles:
         try:
-            table, header = check(p, args.url)
+            table, header = check(p, args.url, live=args.live)
             ok, detail = probe_login(header)
             print(f"  {p:17s} {len(table):>6}  {'HIDUP (SNlM0e ada)' if ok else 'tidak login'} — {detail}")
             if ok:
@@ -160,6 +211,10 @@ def main():
     print()
     if live:
         print(f"  profil dengan sesi hidup: {[p for p, _ in live]}")
+        if args.do_import:
+            for prof_name, header in live:
+                written = import_to_server(args.base, header, args.auth_user)
+                print(f"  {prof_name}: diimpor ke {len(written)} akun {written}")
         os.makedirs(os.path.join(tempfile.gettempdir(), "opencode"), exist_ok=True)
         out = os.path.join(tempfile.gettempdir(), "opencode", "chrome-live-headers.json")
         json.dump({p: h for p, h in live}, open(out, "w", encoding="utf-8"))
