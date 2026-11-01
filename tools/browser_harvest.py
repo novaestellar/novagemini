@@ -280,6 +280,18 @@ def import_to_server(base, api_key, header, profile_name, auth_user=None, accoun
             written.append(a["id"])
         except urllib.error.HTTPError as e:
             print(f"    #{a['id']} gagal: {e.code} {e.read()[:80].decode('utf-8','replace')}")
+    # Catat pemetaan profil -> akun supaya session_keeper tahu siapa pemilik
+    # sesi tiap profil tanpa perlu ditanyakan ulang setiap kali.
+    if written and profile_name:
+        try:
+            mp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session-map.json")
+            m = {}
+            if os.path.exists(mp):
+                m = json.load(open(mp, encoding="utf-8"))
+            m[profile_name] = sorted(set(m.get(profile_name, [])) | set(written))
+            json.dump(m, open(mp, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     return written
 
 
