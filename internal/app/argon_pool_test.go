@@ -42,9 +42,13 @@ func TestArgonFallsBackToPaidAccountWithoutRollout(t *testing.T) {
 		t.Fatalf("tingkat kedua harus akun berbayar tanpa rollout; dapat %+v ok=%v", got, ok)
 	}
 
-	// 3. akun free tidak pernah dipakai untuk Argon: jawabannya pasti model lain.
-	if got, ok := pickCookieAccountFor(argon, map[int64]bool{proven: true, paid: true}); ok {
-		t.Fatalf("akun free harus tetap tersaring untuk Argon; dapat %+v", got)
+	// 3. akun free bukan lagi tersaring habis. Uji 2026-11-03: lima akun yang
+	//    dilabeli tier=free semuanya melayani "4 Argon" saat diminta, jadi label
+	//    tier tidak boleh membuang kandidat — dia cuma pilihan paling akhir,
+	//    dan deteksi downgrade + cooldown yang memutuskan.
+	got, ok = pickCookieAccountFor(argon, map[int64]bool{proven: true, paid: true})
+	if !ok || got == nil || got.ID != free {
+		t.Fatalf("akun free harus jadi cadangan terakhir, bukan dibuang; dapat %+v ok=%v", got, ok)
 	}
 }
 

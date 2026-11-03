@@ -714,7 +714,11 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 			case cap.supportsModelPaidOnly(mc):
 				prio = 1
 			default:
-				continue
+				// Daftar model bukan bukti: lima akun berlabel tier=free terbukti
+				// melayani "4 Argon" (diuji 2026-11-03, upstream bilang 4 Argon).
+				// Jadi akun tetap jadi kandidat paling akhir, bukan dibuang -
+				// deteksi downgrade + cooldown 5 menit yang memutuskan, bukan label.
+				prio = 0
 			}
 		}
 		cands = append(cands, cand{a: a, prio: prio, pro: cap.Tier == "pro"})

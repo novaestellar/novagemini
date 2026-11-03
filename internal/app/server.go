@@ -198,6 +198,20 @@ func callGemini(ctx context.Context, prompt, latest string, mc ModelConfig, tool
 // recordRequest writes one row of metadata to the requests table.
 // Privacy: the prompt/response strings themselves are never persisted —
 // only their length, model name, latency, status, and proxy info.
+// httpStatusForError mengembalikan kode HTTP yang benar-benar dikirim ke klien.
+// Riwayat request memakai nilai ini supaya penolakan 429/400 tidak tercatat 502 —
+// sebelumnya panel menampilkan galat merah untuk rate limit yang klien terima normal.
+func httpStatusForError(err error) int {
+	switch err.(type) {
+	case *RateLimitError:
+		return http.StatusTooManyRequests
+	case *PromptTooLongError:
+		return http.StatusBadRequest
+	default:
+		return http.StatusBadGateway
+	}
+}
+
 func recordRequest(endpoint, model, prompt, response string, res *StreamResult, status int, errStr string, stream bool) {
 	// 媒体产物是超长 base64，剥掉再算 token/长度：既不让它污染统计，也免得在请求线程里
 	// 对上百万字符跑 tiktoken 白白拖慢。
@@ -383,7 +397,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		text, toolCalls, res, err = callGemini(r.Context(), prompt, latest, modelCfg, tools, images, onDelta, onReasoning, reqBaseURL)
 	}
 	if err != nil {
-		recordRequest("chat.completions", modelName, prompt, "", res, 502, err.Error(), stream)
+		recordRequest("chat.completions", modelName, prompt, "", res, httpStatusForError(err), err.Error(), stream)
 		if sse != nil && sse.Started() {
 			sse.Fail(err) // 已经开流，HTTP 状态码改不了了
 			return
@@ -749,7 +763,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		text, toolCalls, res, err = callGemini(r.Context(), prompt, latest, modelCfg, tools, images, onDelta, nil, reqBaseURL)
 	}
 	if err != nil {
-		recordRequest("responses", modelName, prompt, "", res, 502, err.Error(), stream)
+		recordRequest("responses", modelName, prompt, "", res, httpStatusForError(err), err.Error(), stream)
 		if stream {
 			writeEvent("response.failed", map[string]interface{}{
 				"type": "response.failed",
