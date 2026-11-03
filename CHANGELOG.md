@@ -2,6 +2,36 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.22.1
+
+### 修复
+
+- **SSE 流在首个 token 之前的静默期不再哑火（客户端 / 反向代理侧的 503）**。以前 `sseWriter` 只在
+  第一个 delta 到来时才发响应头，所以在「请求已经到了、上游还没吐字」的那段静默里，客户端一个字节
+  都收不到。慢号（3.7/3.8）首个 token 实测可以要 200-700 秒，中间的反向代理（9router 约 129 秒
+  就掐、cloudflared / nginx 同理）看到的是死连接，客户端拿到 503 —— 上游其实还在跑。
+  现在 writer 一创建（发上游之前）就挂上 15 秒心跳：到点若还没有 delta，由心跳自己补发响应头
+  + `role` chunk，再发 SSE 注释 `: keepalive`（按 SSE 规范客户端应忽略注释，不进正文）。写操作统一
+  经 `writeRaw` 用 `sync.Mutex` 串行，`Close()` 配合请求上下文收尾，心跳绝不在 handler 返回后再写。
+  初版把心跳挂在 `start()` 里，而 `start()` 恰恰只在首个 delta 时才触发，等于没盖住它要盖的那段
+  静默 —— 本版改掉。
+  - 判据：实测 `gemini-3.6-flash` 首个内容块 512.6 秒才到，而首个字节 15.0 秒就到了（正好一个心跳
+    间隔），全程 34 条 `: keepalive`，HTTP 200、正文 640 字符完整送达。单元测试
+    `TestHeartbeatCoversSilentGap` 用 40 ms 间隔复现静默期：一个 delta 都不写，也必须先出响应头、
+    `role` chunk 和 keepalive。
+
+- **`gemini-4-argon` 不再被 rollout 标志误筛（可用账号 2 → 5）**。`supportsModel(hexArgon4)`
+  原本只认 ESY5D 的 rollout 标志 `Argon4p0`，而账号 `tier=pro` 这个判断恰恰来自另一处证据：
+  otAQ7b 的模型清单里出现了 Argon（`probe.go` 里明确把模型清单称为"更诚实的来源"）。ESY5D 的
+  payload 本来就可能被截断（babang2 那次只回了 907 字节），于是"模型清单说能用、rollout 标志
+  没带上"的账号被整批筛掉，Argon 被锁死在两个账号上——两号同时进入 5 分钟冷却，就是连续 502。
+  现在选号分三级：rollout 明确的最优先（与原来一致）；没有任何 rollout 级候选时，才降到"已判定
+  为付费（`tier=pro`）但没有该标志"的账号；免费账号在两级都被挡住（它们对这个模型的答复
+  一定是别的模型，必然 502）。
+  - 判据：临时停用两个 rollout 账号后实测，`portableworkerindonesia` 与 `admprustars` 都直接
+    返回 upstream「4 Argon」（HTTP 200，11.5 s / 6.5 s / 7.2 s），无降级、未触发冷却；恢复后
+    正常路径仍落在 rollout 账号上。目前启用且可用的 Argon 账号 = 5。
+
 ## 4.22.0
 
 ### 新增

@@ -426,7 +426,7 @@ DELETE /admin/api/client-keys/{id}
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `/v1/models` | GET | 模型清单 |
-| `/v1/chat/completions` | POST | 对话，支持 `stream` 与 `reasoning_content` |
+| `/v1/chat/completions` | POST | 对话，支持 `stream` 与 `reasoning_content`；静默期每 15 秒发一条 `: keepalive` 注释保活 |
 | `/v1/responses` | POST | Responses API |
 | `/v1/videos` | POST | 创建视频任务 |
 | `/v1/videos/{id}` | GET | 查询视频任务 |

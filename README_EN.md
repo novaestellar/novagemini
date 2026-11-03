@@ -453,7 +453,7 @@ Without `--config` it looks for `config.json` in the current directory, then `$H
 
 | Path | Status | Notes |
 |------|--------|-------|
-| `POST /v1/chat/completions` | ✅ | True streaming: each upstream frame is forwarded incrementally. Degrades to buffer-then-send when `tools` are present |
+| `POST /v1/chat/completions` | ✅ | True streaming: each upstream frame is forwarded incrementally, plus a `: keepalive` SSE comment every 15 s while upstream is silent (clients ignore comments per the SSE spec). Degrades to buffer-then-send when `tools` are present |
 | `POST /v1/responses` | ✅ | OpenAI Responses API (used by Codex CLI). Not truly streaming |
 | `GET /v1/models` | ✅ | 2 models anonymous, 3 with a cookie |
 | `GET /` | ✅ | Unauthenticated health check |
