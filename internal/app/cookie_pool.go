@@ -542,6 +542,100 @@ func modelDenied(acctID int64, mc ModelConfig) bool {
 	return true
 }
 
+// provenModels mencatat akun yang SUDAH terbukti menyajikan sebuah model —
+// bukan sekadar lulus filter rollout.
+//
+// Kenapa perlu: filter rollout hanya melihat flag dari ESY5D, sementara bukti
+// sebenarnya adalah jawaban hulu. Begitu sebuah akun berbayar sekali menjawab
+// dengan model yang benar, dia setara dengan pemegang rollout dan boleh ikut
+// rotasi penuh — sehingga permintaan tersebar ke semua akun yang benar-benar
+// mampu, bukan menumpuk di dua akun yang kebetulan punya flag.
+//
+// Umur 6 jam: cukup untuk menutupi satu sesi kerja, cukup pendek untuk pulih
+// sendiri kalau hak akses akun berubah (Google menambah/mencabut rollout kapan
+// saja). Hilang saat proses berhenti — sama seperti papan skor latensi: ini
+// petunjuk pemilihan, bukan data laporan.
+const modelProvenTTL = 6 * time.Hour
+
+var (
+	provenMu     sync.Mutex
+	provenModels = map[string]int64{} // key -> unix expiry
+)
+
+// markModelProven mencatat bukti positif: akun ini menyajikan model yang diminta.
+func markModelProven(acctID int64, mc ModelConfig) {
+	if acctID <= 0 || mc.HexID == "" {
+		return
+	}
+	provenMu.Lock()
+	provenModels[modelDenyKey(acctID, mc)] = time.Now().Add(modelProvenTTL).Unix()
+	provenMu.Unlock()
+}
+
+// modelProven melaporkan apakah akun ini sudah pernah terbukti melayani model ini.
+func modelProven(acctID int64, mc ModelConfig) bool {
+	if acctID <= 0 || mc.HexID == "" {
+		return false
+	}
+	k := modelDenyKey(acctID, mc)
+	provenMu.Lock()
+	defer provenMu.Unlock()
+	until, ok := provenModels[k]
+	if !ok {
+		return false
+	}
+	if time.Now().Unix() >= until {
+		delete(provenModels, k)
+		return false
+	}
+	return true
+}
+
+// provenSeedWindow: seberapa jauh ke belakang riwayat dipakai untuk menanam
+// ulang bukti saat start.
+const provenSeedWindow = 7 * 24 * time.Hour
+
+// seedProvenFromHistory menanam ulang bukti "akun ini pernah menyajikan model ini
+// dengan benar" dari tabel requests.
+//
+// Kenapa perlu: catatan bukti di memori hilang saat proses berhenti, dan kalau
+// hanya mengandalkan "terbukti ketika dilayani", akun berbayar yang flag
+// rollout-nya tidak ikut terkirim tidak akan pernah dilayani — jadi tidak akan
+// pernah terbukti juga (ayam dan telur, terukur: 8 request Argon beruntun
+// semuanya mendarat di dua akun pemegang rollout). Riwayat request sudah
+// menyimpan pasangan (akun, model, label hulu) yang cocok, jadi bukti itu cukup
+// dibaca kembali.
+func seedProvenFromHistory() {
+	rows, err := getDB().Query(
+		`SELECT DISTINCT account_id, model, upstream_model FROM requests
+		 WHERE status=200 AND account_id IS NOT NULL AND upstream_model<>'' AND ts>=?`,
+		time.Now().Add(-provenSeedWindow).Unix())
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var acctID int64
+		var model, served string
+		if err := rows.Scan(&acctID, &model, &served); err != nil {
+			continue
+		}
+		mc, ok := Models[model]
+		if !ok || mc.HexID == "" {
+			continue
+		}
+		if !modelServedMatches(mc, served) {
+			continue
+		}
+		markModelProven(acctID, mc)
+		n++
+	}
+	if n > 0 {
+		logf("[pool] %d pasangan akun+model ditandai terbukti dari riwayat", n)
+	}
+}
+
 // pickCookieAccountFor 挑一个**真的能用这个模型**的账号。
 //
 // Ini perbaikan inti untuk masalah "model yang dipanggil beda dengan upstream":
@@ -612,10 +706,16 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 		cap := probeForAccount(a.ID)
 		prio := 2
 		if mc.HexID != "" && !cap.supportsModel(mc) {
-			if !cap.supportsModelPaidOnly(mc) {
+			switch {
+			case modelProven(a.ID, mc):
+				// Sudah pernah menjawab dengan model yang benar walau flag
+				// rollout-nya tidak ikut terkirim: perlakukan sebagai setara
+				// pemegang rollout supaya ikut rotasi penuh.
+			case cap.supportsModelPaidOnly(mc):
+				prio = 1
+			default:
 				continue
 			}
-			prio = 1
 		}
 		cands = append(cands, cand{a: a, prio: prio, pro: cap.Tier == "pro"})
 	}

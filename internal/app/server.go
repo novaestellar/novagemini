@@ -230,6 +230,14 @@ func recordRequest(endpoint, model, prompt, response string, res *StreamResult, 
 		r.AccountLabel = res.AccountLabel
 		if status == 200 && res.AccountID > 0 && res.TotalMs > 0 {
 			noteLatency(res.AccountID, res.TotalMs)
+			// Bukti positif untuk pemilihan akun: label hulu benar-benar cocok
+			// dengan model yang diminta. Akun berbayar yang flag rollout-nya
+			// tidak ikut terkirim naik ke tingkat pertama setelah sekali
+			// terbukti, sehingga rotasi mencakup semua akun yang mampu.
+			if mc, ok := Models[model]; ok &&
+				res.UpstreamModel != "" && modelServedMatches(mc, res.UpstreamModel) {
+				markModelProven(res.AccountID, mc)
+			}
 		}
 	}
 	go insertRequest(r)

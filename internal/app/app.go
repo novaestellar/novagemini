@@ -80,7 +80,8 @@ func Run() {
 	loadProxies()
 	seedProxiesFromConfig() // --proxy / 遗留静态代理并进代理池
 	seedCookiesFromConfig() // --cookie-file / 遗留单 cookie 并进 cookie 池
-	loadProbeCache()        // 上次的 kapabilitas 账号，routing langsung pintar
+	loadProbeCache()
+	seedProvenFromHistory() // 上次的 kapabilitas 账号，routing langsung pintar
 	repairAccountStatuses() // cabut penanda mati yang dulu ditulis bug rotate
 	resolvedAPIKey := initAPIKey(*apiKey)
 	initTokenizer()
@@ -151,11 +152,11 @@ func Run() {
 		mux.HandleFunc("/admin/api/proxies/", requireAuth(handleAdminProxyItem))
 		mux.HandleFunc("/admin/api/apikey", requireAuth(handleAdminAPIKey))
 		mux.HandleFunc("/admin/api/usage", requireAuth(handleAdminUsage))
-	mux.HandleFunc("/admin/api/scoreboard", requireAuth(handleAdminScoreboard))
-	mux.HandleFunc("/admin/api/client-keys", requireAuth(handleAdminClientKeys))
-	mux.HandleFunc("/admin/api/client-keys/", requireAuth(handleAdminClientKeyItem))
-	mux.HandleFunc("/admin/api/network", requireAuth(handleAdminNetwork))
-	mux.HandleFunc("/admin/api/tunnel", requireAuth(handleAdminTunnel))
+		mux.HandleFunc("/admin/api/scoreboard", requireAuth(handleAdminScoreboard))
+		mux.HandleFunc("/admin/api/client-keys", requireAuth(handleAdminClientKeys))
+		mux.HandleFunc("/admin/api/client-keys/", requireAuth(handleAdminClientKeyItem))
+		mux.HandleFunc("/admin/api/network", requireAuth(handleAdminNetwork))
+		mux.HandleFunc("/admin/api/tunnel", requireAuth(handleAdminTunnel))
 		mux.HandleFunc("/admin/api/config", requireAuth(handleAdminConfig))
 		mux.HandleFunc("/admin/api/cookies", requireAuth(handleAdminCookies))
 		mux.HandleFunc("/admin/api/cookies/", requireAuth(handleAdminCookieItem))
