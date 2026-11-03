@@ -72,6 +72,24 @@ harvest 写入的是 `rotate_disabled=1`（浏览器优先）。如果决定交�
 
 ---
 
+## 防止机密再次进入仓库
+
+`secret_guard.py` 是提交前的闸门，会拦下：novagemini/客户端/9router 的密钥、
+GitHub/Notion token、Google 会话 cookie 值，以及 `session-map.json`、
+`firefox-profiles.json` 这两个含账号名称的本地状态文件。
+
+```bash
+python tools\secret_guard.py --install   # 装成 .git/hooks/pre-commit（每个克隆装一次）
+python tools\secret_guard.py             # 手动检查当前已 stage 的文件
+```
+
+规则很简单：**密钥只存在于两处** —— `service.json` 的 `env`（给进程注入），
+以及面板（脚本运行时通过 loopback 读取）。仓库里任何地方都不写第二份。
+
+历史里曾经出现过的那份密钥已从提交历史中清除（git filter-repo + force push），
+但 GitHub 会保留一段时间内不可达的旧对象 —— 知道旧 SHA 的人仍可能读到。
+彻底消除只有两条路：把仓库设为私有，或向 GitHub 申请清除不可达对象。
+
 ## 身份如何确认
 
 `browser_harvest.py` / `chrome_harvest.py` 在写入前会做两件事：
