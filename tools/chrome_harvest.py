@@ -194,6 +194,19 @@ def import_to_server(base, header, auth_user=None, accounts=None):
     return written
 
 
+
+def fetch_api_key(base):
+    """Ambil API key dari panel (loopback, tanpa auth) supaya tidak perlu
+    ditulis di file mana pun. Panel hanya mendengarkan 127.0.0.1."""
+    try:
+        import urllib.request as _u
+        with _u.urlopen(base.rstrip("/") + "/admin/api/apikey", timeout=10) as r:
+            import json as _j
+            return _j.loads(r.read()).get("key", "") or ""
+    except Exception:
+        return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profiles", nargs="*", default=None)
@@ -209,6 +222,8 @@ def main():
     ap.add_argument("--live", action="store_true",
                     help="pakai folder profil asli (Chrome harus tertutup); perlu untuk cookie app-bound")
     args = ap.parse_args()
+    if not args.api_key:
+        args.api_key = fetch_api_key(args.base)
     accounts = {int(x) for x in args.account.split(",") if x.strip().isdigit()}
 
     if args.wait:

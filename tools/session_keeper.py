@@ -115,6 +115,19 @@ def import_header(base, api_key, header, accounts):
     return bh.import_to_server(base, api_key, header, "", None, set(accounts))
 
 
+
+def fetch_api_key(base):
+    """Ambil API key dari panel (loopback, tanpa auth) supaya tidak perlu
+    ditulis di file mana pun. Panel hanya mendengarkan 127.0.0.1."""
+    try:
+        import urllib.request as _u
+        with _u.urlopen(base.rstrip("/") + "/admin/api/apikey", timeout=10) as r:
+            import json as _j
+            return _j.loads(r.read()).get("key", "") or ""
+    except Exception:
+        return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", default="")
@@ -124,6 +137,8 @@ def main():
     ap.add_argument("--visit", action="store_true",
                     help="buka tiap profil headless dulu (default tidak: cukup baca cookie)")
     args = ap.parse_args()
+    if not args.api_key:
+        args.api_key = fetch_api_key(args.base)
 
     m = load_map()
     profiles = [args.profile] if args.profile else sorted(m)

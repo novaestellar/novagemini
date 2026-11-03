@@ -1293,6 +1293,17 @@ def cmd_refresh(args) -> int:
     return 0 if refreshed else 2
 
 
+
+def fetch_api_key(base: str) -> str:
+    """Ambil API key dari panel (loopback, tanpa auth) supaya tidak perlu
+    ditulis di berkas mana pun - dulu pernah ikut ter-commit ke repo publik."""
+    try:
+        with urllib.request.urlopen(base.rstrip("/") + "/admin/api/apikey", timeout=10) as r:
+            return json.loads(r.read()).get("key", "") or ""
+    except Exception:
+        return ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Ambil cookie sesi Google dari browser lokal")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1310,7 +1321,7 @@ def main() -> int:
     p_sync.add_argument("--account", type=int, help="id akun tujuan (kosong = cocokkan lewat SAPISID)")
     p_sync.add_argument("--auth-user", type=int, default=None,
                         help="kalau beberapa akun berbagi cookie yang sama, pilih yang nomornya ini")
-    p_sync.add_argument("--api-key", required=True)
+    p_sync.add_argument("--api-key", default="")
     p_sync.add_argument("--base", default="http://127.0.0.1:8083")
     p_sync.add_argument("--keep-rotate", action="store_true",
                         help="jangan matikan rotasi NovaGemini untuk akun ini")
@@ -1351,14 +1362,14 @@ def main() -> int:
     p_imp.add_argument("--auth-user", type=int, default=0,
                        help="nomor akun di profil itu (Google multi-login, 0 = akun utama)")
     p_imp.add_argument("--base", default="http://127.0.0.1:8083")
-    p_imp.add_argument("--api-key", required=True)
+    p_imp.add_argument("--api-key", default="")
     p_imp.set_defaults(func=cmd_import)
 
     p_bat = sub.add_parser("batch",
                            help="impor banyak akun dari file: label + header Cookie per entri")
     p_bat.add_argument("file", help="berkas .txt, atau folder berisi .txt")
     p_bat.add_argument("--base", default="http://127.0.0.1:8083")
-    p_bat.add_argument("--api-key", required=True)
+    p_bat.add_argument("--api-key", default="")
     p_bat.add_argument("--auth-user", type=int, default=0,
                        help="nomor akun bawaan; entri bisa menimpanya dengan `nama@3`")
     p_bat.add_argument("--force", action="store_true",
@@ -1375,14 +1386,14 @@ def main() -> int:
     p_acc.add_argument("--limit", type=int, default=10,
                        help="batas nomor akun yang diperiksa (default 10)")
     p_acc.add_argument("--base", default="http://127.0.0.1:8083")
-    p_acc.add_argument("--api-key", required=True)
+    p_acc.add_argument("--api-key", default="")
     p_acc.set_defaults(func=cmd_accounts)
 
     p_ref = sub.add_parser("refresh",
                            help="segarkan cookie semua akun yang berbagi sesi satu profil")
     p_ref.add_argument("--profile", help="profil tertentu; kosong = semua")
     p_ref.add_argument("--base", default="http://127.0.0.1:8083")
-    p_ref.add_argument("--api-key", required=True)
+    p_ref.add_argument("--api-key", default="")
     p_ref.add_argument("--force", action="store_true",
                        help="tetap timpa walau sesi sumber tidak lolos verifikasi")
     p_ref.set_defaults(func=cmd_refresh)

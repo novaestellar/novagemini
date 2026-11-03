@@ -348,6 +348,19 @@ def import_to_server(base, api_key, header, profile_name, auth_user=None, accoun
     return written
 
 
+
+def fetch_api_key(base):
+    """Ambil API key dari panel (loopback, tanpa auth) supaya tidak perlu
+    ditulis di file mana pun. Panel hanya mendengarkan 127.0.0.1."""
+    try:
+        import urllib.request as _u
+        with _u.urlopen(base.rstrip("/") + "/admin/api/apikey", timeout=10) as r:
+            import json as _j
+            return _j.loads(r.read()).get("key", "") or ""
+    except Exception:
+        return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profile", required=True, help="nama folder profil Firefox")
@@ -360,6 +373,8 @@ def main():
     ap.add_argument("--account", default="",
                     help="id akun tujuan, dipisah koma (wajib untuk --import)")
     args = ap.parse_args()
+    if not args.api_key:
+        args.api_key = fetch_api_key(args.base)
 
     print(f"  profil: {args.profile}")
     try:
