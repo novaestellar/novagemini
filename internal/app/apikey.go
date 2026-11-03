@@ -148,17 +148,14 @@ func requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		{
-			writeJSON(w, 401, map[string]interface{}{
-				"error": map[string]string{
-					"message": "Invalid API key. Set Authorization: Bearer <key> or x-api-key header.",
-					"type":    "invalid_request_error",
-					"code":    "invalid_api_key",
-				},
-			})
-			return
-		}
-		next(w, r)
+		writeJSON(w, 401, map[string]interface{}{
+			"error": map[string]string{
+				"message": "Invalid API key. Set Authorization: Bearer <key> or x-api-key header.",
+				"type":    "invalid_request_error",
+				"code":    "invalid_api_key",
+			},
+		})
+		return
 	}
 }
 
