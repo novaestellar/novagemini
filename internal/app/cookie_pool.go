@@ -581,7 +581,19 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 	// melayani model yang sama (3.1 Pro di acc1 terbukti 200) tapi ini cadangan,
 	// bukan sasaran utama. Akun yang belum pernah diprobe dianggap non-pro
 	// (cadangan), jadi akun pro yang sudah terdeteksi selalu menang.
-	var proChoice, fallbackChoice *CookieAccount
+	// Tiga tingkat prioritas:
+	//   2 = TERBUKTI  — rollout eksplisit untuk model ini
+	//   1 = BERBAYAR  — belum terbukti, tapi daftar modelnya memuat model ini
+	// Tingkat 1 hanya dipakai kalau tingkat 2 benar-benar tidak ada. Jadi akun
+	// yang belum terbukti tidak pernah mencuri giliran dari akun yang sudah
+	// teruji, tapi model terkunci tidak lagi mati total ketika satu-satunya
+	// pemegang rollout sedang cooldown 5 menit.
+	type cand struct {
+		a    CookieAccount
+		prio int
+		pro  bool
+	}
+	var cands []cand
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
@@ -591,29 +603,42 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 		if skip[a.ID] {
 			continue
 		}
-		if mc.HexID != "" && !probeForAccount(a.ID).supportsModel(mc) {
-			continue
-		}
 		// Akun yang baru saja disajikan model lain untuk model ini dilewati
 		// selama cooldown, supaya request berikutnya tidak membayar 10-20 detik
 		// lagi untuk hasil yang sama.
 		if modelDenied(a.ID, mc) {
 			continue
 		}
-		c := a
-		// Rata-rata 1 jam per akun dipakai sebagai pemecah seri: yang jelas
-		// lebih cepat menang, yang praktis sama tetap ikut round-robin.
-		if probeForAccount(a.ID).Tier == "pro" {
-			if proChoice == nil || fasterAccount(a.ID, proChoice.ID) {
-				proChoice = &c
+		cap := probeForAccount(a.ID)
+		prio := 2
+		if mc.HexID != "" && !cap.supportsModel(mc) {
+			if !cap.supportsModelPaidOnly(mc) {
+				continue
 			}
-		} else if fallbackChoice == nil || fasterAccount(a.ID, fallbackChoice.ID) {
-			fallbackChoice = &c
+			prio = 1
 		}
+		cands = append(cands, cand{a: a, prio: prio, pro: cap.Tier == "pro"})
 	}
-	chosen := proChoice
-	if chosen == nil {
-		chosen = fallbackChoice
+	var chosen *CookieAccount
+	bestPrio, bestPro := -1, false
+	for i := range cands {
+		c := &cands[i]
+		better := c.prio > bestPrio
+		if !better && c.prio == bestPrio {
+			// Rata-rata 1 jam per akun dipakai sebagai pemecah seri: yang jelas
+			// lebih cepat menang, yang praktis sama tetap ikut round-robin.
+			switch {
+			case c.pro && !bestPro:
+				better = true
+			case c.pro == bestPro && (chosen == nil || fasterAccount(c.a.ID, chosen.ID)):
+				better = true
+			}
+		}
+		if better {
+			chosen = &c.a
+			bestPrio = c.prio
+			bestPro = c.pro
+		}
 	}
 	if chosen == nil {
 		// Tidak ada akun yang mendukung model ini: kembalikan false.

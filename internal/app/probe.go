@@ -420,6 +420,32 @@ func (c AccountCapability) supportsModel(mc ModelConfig) bool {
 	return true
 }
 
+// supportsModelPaidOnly menjawab: akun ini TIDAK punya bukti rollout untuk model
+// tersebut, tapi bukti lain menunjukkan dia berbayar dan model itu terdaftar di
+// daftar modelnya (otAQ7b).
+//
+// Dipakai pemilih akun sebagai TINGKAT KEDUA — pilihan terakhir, hanya ketika
+// tidak ada satu pun akun yang punya bukti rollout.
+//
+// Kenapa Argon butuh ini: tier "pro" sendiri berasal dari daftar model otAQ7b
+// yang memuat Argon (lihat penentuan tier di atas) — sumber yang di komentar itu
+// justru disebut lebih jujur daripada ESY5D. Tapi supportsModel(hexArgon4) hanya
+// membaca daftar rollout ESY5D, dan payload ESY5D memang bisa terpotong (kasus
+// babang2: 907 byte, daftar rollout-nya tidak lengkap walau modelnya disajikan).
+// Akibatnya akun berbayar yang daftar modelnya memuat Argon tetap tersaring, dan
+// Argon terkunci pada akun yang kebetulan flag rollout-nya ikut terkirim —
+// gejalanya: "kenapa Argon cuma ada di dua akun, padahal sisanya pro?".
+//
+// Akun FREE tidak pernah lolos di sini: model ini selalu dijawab model lain oleh
+// akun free, dan deteksi downgrade mengubahnya jadi 502 pasti.
+func (c AccountCapability) supportsModelPaidOnly(mc ModelConfig) bool {
+	switch mc.HexID {
+	case hexArgon4:
+		return c.Tier == "pro"
+	}
+	return false
+}
+
 // probeAllAccounts memeriksa semua akun, menyimpan hasilnya di cache dan DB.
 func probeAllAccounts() map[int64]AccountCapability {
 	probeMu.Lock()
