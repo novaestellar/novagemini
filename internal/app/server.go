@@ -319,7 +319,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			j.ID, reqBaseURL, j.ID, reqBaseURL)
 		recordRequest("chat.completions", modelName, prompt, "", nil, 202, note, stream)
 		if stream {
-			sse := newSSEWriter(w, cid, created, modelName)
+			sse := newSSEWriter(r.Context(), w, cid, created, modelName)
+			defer sse.Close()
 			sse.SendContent(notice)
 			sse.Finish("stop", nil)
 			return
@@ -345,7 +346,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var gate *toolFenceGate
 	var onDelta, onReasoning func(string)
 	if stream {
-		sse = newSSEWriter(w, cid, created, modelName)
+		sse = newSSEWriter(r.Context(), w, cid, created, modelName)
+		defer sse.Close()
 		onReasoning = sse.SendReasoning
 		if len(tools) == 0 {
 			onDelta = sse.SendContent

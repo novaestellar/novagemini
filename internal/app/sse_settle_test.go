@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +13,7 @@ import (
 // konten model. Sekarang potongan awal ditahan dan Settle memutuskannya.
 func TestSettleRejectsCannedRefusal(t *testing.T) {
 	rec := httptest.NewRecorder()
-	s := newSSEWriter(rec, "id", 1, "gemini-3.8-flash")
+	s := newSSEWriter(context.Background(), rec, "id", 1, "gemini-3.8-flash")
 
 	s.SendContent("I seem to be encountering an error. Can I try something else for you?")
 	if strings.Contains(rec.Body.String(), `"content"`) {
@@ -26,7 +27,7 @@ func TestSettleRejectsCannedRefusal(t *testing.T) {
 // Jawaban pendek yang sah harus tetap terkirim saat Settle dipanggil.
 func TestSettleFlushesShortAnswer(t *testing.T) {
 	rec := httptest.NewRecorder()
-	s := newSSEWriter(rec, "id", 1, "gemini-3.6-flash")
+	s := newSSEWriter(context.Background(), rec, "id", 1, "gemini-3.6-flash")
 
 	s.SendContent("OK")
 	if err := s.Settle("OK"); err != nil {
@@ -41,7 +42,7 @@ func TestSettleFlushesShortAnswer(t *testing.T) {
 // begitu melewati heldContentLimit.
 func TestStreamReleasesAfterLimit(t *testing.T) {
 	rec := httptest.NewRecorder()
-	s := newSSEWriter(rec, "id", 1, "gemini-4-argon")
+	s := newSSEWriter(context.Background(), rec, "id", 1, "gemini-4-argon")
 
 	long := strings.Repeat("a", heldContentLimit+10)
 	s.SendContent(long)
@@ -53,7 +54,7 @@ func TestStreamReleasesAfterLimit(t *testing.T) {
 // ResponseWriter tanpa Flusher tidak boleh panik.
 func TestSSEWriterWithoutFlusher(t *testing.T) {
 	var w http.ResponseWriter = &noFlushWriter{}
-	s := newSSEWriter(w, "id", 1, "m")
+	s := newSSEWriter(context.Background(), w, "id", 1, "m")
 	s.SendContent("hello")
 	if err := s.Settle("hello"); err != nil {
 		t.Fatalf("unexpected: %v", err)

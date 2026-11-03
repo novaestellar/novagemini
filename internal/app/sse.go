@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,12 +22,21 @@ type sseWriter struct {
 	id      string
 	created int64
 	model   string
-	started bool
+	started atomic.Bool
 
 	// mu melindungi penulisan ke ResponseWriter: heartbeat dikirim dari
 	// goroutine terpisah, jadi dua penulis tidak boleh bertabrakan.
 	mu     sync.Mutex
+	closed bool
+
+	// startMu menserialkan start(): denyut bisa memicu start() dari goroutine
+	// denyut bersamaan dengan delta pertama dari goroutine permintaan. Tanpa
+	// kunci ini, delta bisa menyalip chunk role.
+	startMu sync.Mutex
+
+	ctx    context.Context
 	hbStop chan struct{}
+	hbDone chan struct{}
 	hbOnce sync.Once
 
 	// held menahan potongan awal stream. Penolakan generik Google ("I seem to
@@ -42,29 +53,52 @@ type sseWriter struct {
 // cloudflared, nginx) memutus koneksi yang diam; hasilnya klien melihat 503
 // padahal upstream masih bekerja. Komentar SSE (`: keepalive`) diabaikan
 // klien OpenAI - tidak muncul sebagai konten, hanya menjaga koneksi hidup.
-const heartbeatInterval = 15 * time.Second
+var heartbeatInterval = 15 * time.Second
 
 // writeRaw menulis langsung ke klien dengan kunci, lalu flush.
+// Setelah Close, semua tulisan dibuang: ResponseWriter tidak sah lagi dipakai
+// setelah handler selesai.
 func (s *sseWriter) writeRaw(format string, args ...interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	fmt.Fprintf(s.w, format, args...)
 	if s.flusher != nil {
 		s.flusher.Flush()
 	}
 }
 
-func (s *sseWriter) startHeartbeat() {
+// armHeartbeat dipanggil saat writer dibuat - SEBELUM permintaan ke hulu.
+//
+// Perbaikan atas kesalahan versi pertama: denyut dulu baru menyala di dalam
+// start(), padahal start() hanya jalan ketika delta pertama tiba. Jeda yang
+// justru jadi biang 503 itu ada DI DEPAN delta pertama - selama itu belum ada
+// header, belum ada satu byte pun terkirim, dan denyut belum hidup. Jadi
+// denyut hanya menutupi celah antar-chunk, bukan celah yang merusak.
+//
+// Sekarang: denyut berjalan sejak detik nol. Kalau satu interval penuh lewat
+// tanpa delta, ticker memanggil start() sendiri (komit header + chunk role)
+// lalu mengirim keepalive - byte pertama sampai ke klien jauh sebelum proxy
+// menyerah. Kalau delta datang lebih dulu (kasus normal), start() sudah
+// terlanjur hidup dan keepalive cuma mengisi jeda antar potongan.
+func (s *sseWriter) armHeartbeat() {
 	s.hbOnce.Do(func() {
 		s.hbStop = make(chan struct{})
+		s.hbDone = make(chan struct{})
 		go func() {
+			defer close(s.hbDone)
 			t := time.NewTicker(heartbeatInterval)
 			defer t.Stop()
 			for {
 				select {
 				case <-s.hbStop:
 					return
+				case <-s.ctx.Done():
+					return
 				case <-t.C:
+					s.start()
 					s.writeRaw(": keepalive\n\n")
 				}
 			}
@@ -73,25 +107,47 @@ func (s *sseWriter) startHeartbeat() {
 }
 
 func (s *sseWriter) stopHeartbeat() {
+	s.mu.Lock()
 	if s.hbStop != nil {
 		close(s.hbStop)
 		s.hbStop = nil
 	}
+	done := s.hbDone
+	s.mu.Unlock()
+	// Tunggu goroutine denyut benar-benar keluar sebelum handler kembali:
+	// tanpa ini masih ada celah satu tulisan balapan dengan pembacaan respons.
+	if done != nil {
+		<-done
+	}
 }
 
-func newSSEWriter(w http.ResponseWriter, id string, created int64, model string) *sseWriter {
+// Close menghentikan denyut dan menutup writer. Wajib dipanggil sebelum
+// handler kembali (defer), agar ticker tidak menulis ke ResponseWriter yang
+// sudah tidak sah.
+func (s *sseWriter) Close() {
+	s.stopHeartbeat()
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+}
+
+func newSSEWriter(ctx context.Context, w http.ResponseWriter, id string, created int64, model string) *sseWriter {
 	f, _ := w.(http.Flusher)
-	return &sseWriter{w: w, flusher: f, id: id, created: created, model: model}
+	s := &sseWriter{w: w, flusher: f, id: id, created: created, model: model, ctx: ctx}
+	s.armHeartbeat()
+	return s
 }
 
-func (s *sseWriter) Started() bool { return s.started }
+func (s *sseWriter) Started() bool { return s.started.Load() }
 
 // start 发送 SSE 响应头和首个 delta{"role":"assistant"} chunk。幂等。
 func (s *sseWriter) start() {
-	if s.started {
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	if s.started.Load() {
 		return
 	}
-	s.started = true
+	s.started.Store(true)
 	s.w.Header().Set("Content-Type", "text/event-stream")
 	s.w.Header().Set("Cache-Control", "no-cache")
 	s.w.Header().Set("Connection", "keep-alive")
@@ -101,7 +157,6 @@ func (s *sseWriter) start() {
 	s.w.Header().Set("Access-Control-Allow-Origin", "*")
 	s.w.WriteHeader(200)
 	s.chunk(map[string]interface{}{"role": "assistant"}, nil, nil)
-	s.startHeartbeat()
 }
 
 func (s *sseWriter) chunk(delta map[string]interface{}, finish interface{}, usage map[string]int) {
