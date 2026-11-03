@@ -466,7 +466,7 @@ headless 浏览器 (harvest) = 读取 cookie 时的第二个客户端
 novagemini (Go, 指纹模拟) = 发出请求时的第三个客户端
 ```
 
-同一个会话被三个客户端轮流使用时，Google 会把它当作会话被盗并撤销。实测对照：`novaestellar` 从不被 harvest / 反复验证，稳定运行数天；而被我 harvest 并反复验证过的账号，在数小时内陆续失效。
+同一个会话被三个客户端轮流使用时，Google 会把它当作会话被盗并撤销。实测对照：一个从不被 harvest / 反复验证的账号稳定运行数天；而被反复 harvest 并验证过的账号，在数小时内陆续失效。
 
 所以：
 
@@ -574,4 +574,4 @@ MIT。见 [LICENSE](LICENSE)。
 
 - [bogdanfinn/tls-client](https://github.com/bogdanfinn/tls-client) — 浏览器指纹
 - [tiktoken-go](https://github.com/pkoukk/tiktoken-go) — Token 估算
-- 面板视觉取自 [novaCF](https://github.com/novaestellar/novacf) 的暖纸 + 淡紫体系
+- 面板视觉参考 novaCF 控制台的暖纸 + 淡紫体系

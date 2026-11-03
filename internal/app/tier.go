@@ -4,7 +4,7 @@ package app
 //
 // Probe ESY5D hanya mengirim daftar "capability" yang kadang tidak memuat tanda
 // berbayar walau langganannya aktif — terukur pada tiga akun Pro operator
-// (admprustars, animainventi, portableworker): ESY5D-nya hanya berisi JASMINE.
+// (beberapa akun berbayar): daftar ESY5D-nya hanya berisi JASMINE.
 //
 // Sinyal yang lebih jujur ada di daftar model per akun (rpcids=otAQ7b). Akun
 // berbayar menerima 32 model termasuk Argon; akun gratis 23 model tanpa Argon.

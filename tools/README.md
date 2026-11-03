@@ -21,10 +21,10 @@
 python tools\cookie_grab.py check --profile "firefox:<文件夹名>"
 
 # Firefox：取一份 cookie，验证后写入指定账号（并记录 profile→账号 映射）
-python tools\browser_harvest.py --profile "sttbandung105v3" --import --account 13 --api-key sk-gemini-…
+python tools\browser_harvest.py --profile "<nama-profil>" --import --account <id-akun>
 
 # Chrome：必须 Chrome 完全退出（三横线 → 退出），否则只能读到 6 个残缺 cookie
-python tools\chrome_harvest.py --live --profiles Default --import --account 15
+python tools\chrome_harvest.py --live --profiles Default --import --account <id-akun>
 
 # 逐个核验（每个账号一次请求）
 python tools\verify_accounts.py
@@ -43,14 +43,14 @@ python tools\verify_accounts.py --ids 12,17
 浏览器（创建会话） → headless 浏览器（harvest 读取） → novagemini（发请求）
 ```
 
-实测对照：`novaestellar` 从不被 harvest / 反复验证，稳定运行数天；而被反复 harvest 的账号在数小时内陆续失效。**刚登录后 harvest 一次，然后就停手。**
+实测对照：一个从不被 harvest / 反复验证的账号稳定运行数天；而被反复 harvest 的账号在数小时内陆续失效。**刚登录后 harvest 一次，然后就停手。**
 
 **2. 不要频繁 verify。** 本机 IP 的配额是 5 并发 / 30 RPM / 80 RPH，而且**所有账号共享这一份配额**。一次"逐个账号测试"就是 11 次请求，几次下来配额耗尽，健康账号也会返回 429/502 —— 看起来像账号批量死亡，其实是自己把配额打光。验证请间隔 20 秒以上，或者干脆等真实请求失败再查。
 
 **3. 不要把一个账号同时交给浏览器和服务器。**
 
 ```
-rotate_disabled=0  →  服务器持有并轮换（像 novaestellar，最稳定）
+rotate_disabled=0  →  服务器持有并轮换（最稳定）
 rotate_disabled=1  →  浏览器持有，服务器只借用；此时浏览器不要再用该账号
 ```
 
@@ -64,7 +64,7 @@ harvest 写入的是 `rotate_disabled=1`（浏览器优先）。如果决定交�
 
 | 文件 | 内容 |
 |---|---|
-| `firefox-profiles.json` | 友好名 → Firefox 配置文件夹（如 `sttbandung105v3` → `sttbandung105v3`） |
+| `firefox-profiles.json` | 友好名 → Firefox 配置文件夹（如 `account-a` → `xxxx.account-a`） |
 | `session-map.json` | Firefox 配置文件夹 → 账号 id 列表，`session_keeper.py` 用它决定写到哪里 |
 | `refresh-cookies.cmd` | 旧的刷新包装脚本（对应的计划任务已删除，仅供参考） |
 | `session-keeper.cmd` | `session_keeper.py` 的包装脚本（计划任务 `novagemini-session-keeper`，**当前处于禁用状态**） |
