@@ -110,13 +110,22 @@ def chrome_running():
         return False
 
 
-def check(profile_name, url="https://gemini.google.com/app", live=False):
+def check(profile_name, url="https://gemini.google.com/app", live=False,
+          user_data_dir="", profile_directory="Default"):
     if live:
-        # Profil asli: cookie app-bound hanya bisa didekripsi di path ini.
-        # Syaratnya Chrome tidak sedang berjalan.
-        if chrome_running():
-            raise SystemExit("Chrome masih jalan — tutup dulu untuk mode --live")
-        prof = os.path.join(USER_DATA, profile_name)
+        # Dua kasus berbeda:
+        #  a) folder Default Chrome -> Chrome menolak otomasi sama sekali
+        #     ("DevToolsActivePort file doesn't exist"); harvest tidak mungkin.
+        #  b) folder User Data milik sendiri -> boleh, dan cookie app-bound
+        #     bisa dibaca karena pathnya tidak berubah.
+        if user_data_dir:
+            prof = user_data_dir
+            if not os.path.isdir(prof):
+                raise SystemExit(f"folder User Data tidak ada: {prof}")
+        else:
+            if chrome_running():
+                raise SystemExit("Chrome masih jalan — tutup dulu untuk mode --live")
+            prof = os.path.join(USER_DATA, profile_name)
     else:
         prof = snapshot(profile_name)
     proc = subprocess.Popen([CHROMEDRIVER, f"--port={WD_PORT}"],
@@ -137,9 +146,9 @@ def check(profile_name, url="https://gemini.google.com/app", live=False):
                 "binary": CHROME,
                 "args": ["--headless=new", "--no-first-run", "--no-default-browser-check",
                          "--disable-sync",
-                         (f"--user-data-dir={USER_DATA}" if live else f"--user-data-dir={prof}"),
+                         ((f"--user-data-dir={prof}" if user_data_dir else f"--user-data-dir={prof}")),
                          # mode live memakai root User Data, jadi profil harus disebut
-                         *([f"--profile-directory={profile_name}"] if live else [])],
+                         *([f"--profile-directory={profile_directory if user_data_dir else profile_name}"] if live else [])],
             },
         }}}
         session = _wd("POST", "/session", caps, timeout=120)["value"]["sessionId"]
@@ -210,8 +219,14 @@ def fetch_api_key(base):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--profiles", nargs="*", default=None)
+    ap.add_argument("--user-data-dir", default="",
+                    help="folder User Data milik sendiri (bukan Default Chrome). "
+                         "Chrome menolak otomasi pada folder default, jadi untuk "
+                         "login di Chrome buat folder terpisah dan pakai opsi ini")
+    ap.add_argument("--profile-directory", default="Default")
     ap.add_argument("--url", default="https://gemini.google.com/app")
     ap.add_argument("--base", default="http://127.0.0.1:8083")
+    ap.add_argument("--api-key", default="", help="kalau kosong, diambil dari panel (loopback)")
     ap.add_argument("--import", dest="do_import", action="store_true",
                     help="tulis cookie profil yang hidup ke novagemini")
     ap.add_argument("--auth-user", type=int, default=None)
@@ -222,7 +237,7 @@ def main():
     ap.add_argument("--live", action="store_true",
                     help="pakai folder profil asli (Chrome harus tertutup); perlu untuk cookie app-bound")
     args = ap.parse_args()
-    if not args.api_key:
+    if not getattr(args, "api_key", ""):
         args.api_key = fetch_api_key(args.base)
     accounts = {int(x) for x in args.account.split(",") if x.strip().isdigit()}
 
@@ -248,7 +263,9 @@ def main():
     live = []
     for p in profiles:
         try:
-            table, header = check(p, args.url, live=args.live)
+            table, header = check(p, args.url, live=args.live,
+                                   user_data_dir=args.user_data_dir,
+                                   profile_directory=args.profile_directory)
             ok, detail = probe_login(header)
             print(f"  {p:17s} {len(table):>6}  {'HIDUP (SNlM0e ada)' if ok else 'tidak login'} — {detail}")
             if ok:

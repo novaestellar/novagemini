@@ -373,7 +373,7 @@ def main():
     ap.add_argument("--account", default="",
                     help="id akun tujuan, dipisah koma (wajib untuk --import)")
     args = ap.parse_args()
-    if not args.api_key:
+    if not getattr(args, "api_key", ""):
         args.api_key = fetch_api_key(args.base)
 
     print(f"  profil: {args.profile}")

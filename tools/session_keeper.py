@@ -137,7 +137,7 @@ def main():
     ap.add_argument("--visit", action="store_true",
                     help="buka tiap profil headless dulu (default tidak: cukup baca cookie)")
     args = ap.parse_args()
-    if not args.api_key:
+    if not getattr(args, "api_key", ""):
         args.api_key = fetch_api_key(args.base)
 
     m = load_map()

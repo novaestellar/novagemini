@@ -72,6 +72,26 @@ harvest 写入的是 `rotate_disabled=1`（浏览器优先）。如果决定交�
 
 ---
 
+### Chrome 的两条硬限制（实测）
+
+```
+1. Chrome 的默认 User Data 目录不能被自动化
+   chromedriver → "Chrome failed to start: crashed
+                   (DevToolsActivePort file doesn't exist)"
+   → 用 --live 读默认目录：不可能。move/复制也不行（app-bound cookie 解不开，只能读到 6 个残片）。
+
+2. 因此 Chrome 里登录的账号只能这样取：
+   a) 改在 Firefox 里登录（已验证可行），或
+   b) 给这个账号单独建一个 Chrome User Data 目录，把账号登在那里，
+      然后：
+      python tools\chrome_harvest.py --live --user-data-dir "<folder-itu>" \
+             --profile-directory Default --import --account <id>
+```
+
+判断登录落在哪个浏览器，看 cookie 数据库的修改时间：Firefox 是
+`Profiles\<名字>\cookies.sqlite(-wal)`，Chrome 是
+`User Data\<名字>\Network\Cookies`。
+
 ## 防止机密再次进入仓库
 
 `secret_guard.py` 是提交前的闸门，会拦下：novagemini/客户端/9router 的密钥、
