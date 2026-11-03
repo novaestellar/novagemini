@@ -31,6 +31,10 @@
   - 判据：临时停用两个 rollout 账号后实测，`portableworkerindonesia` 与 `admprustars` 都直接
     返回 upstream「4 Argon」（HTTP 200，11.5 s / 6.5 s / 7.2 s），无降级、未触发冷却；恢复后
     正常路径仍落在 rollout 账号上。目前启用且可用的 Argon 账号 = 5。
+  - 配套：一旦某个账号真的用正确模型答过一次（hulu 标签与请求模型相符），它就被记为"已证实"，
+    与 rollout 账号同级参与轮转；启动时这段证据还会从 `requests` 表里回填，避免"没被选中过就
+    永远证明不了"的循环（实测：没回填时连续 8 次 Argon 全落在两个 rollout 账号上）。免费账号
+    仍然两级都挡住。
 
 ## 4.22.0
 
