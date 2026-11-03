@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
 
 // sseWriter 把 chat.completion.chunk 按 OpenAI 规范的顺序写出去：
@@ -20,11 +22,61 @@ type sseWriter struct {
 	model   string
 	started bool
 
+	// mu melindungi penulisan ke ResponseWriter: heartbeat dikirim dari
+	// goroutine terpisah, jadi dua penulis tidak boleh bertabrakan.
+	mu     sync.Mutex
+	hbStop chan struct{}
+	hbOnce sync.Once
+
 	// held menahan potongan awal stream. Penolakan generik Google ("I seem to
 	// be encountering an error...") hanya puluhan karakter dan datang sebagai
 	// jawaban biasa di jalur stream; tanpa ditahan, teks itu terkirim sebagai
 	// konten dan klien mengira model menjawab begitu.
 	held strings.Builder
+}
+
+// heartbeatInterval: jeda antar komentar keepalive.
+//
+// Kenapa ada: antara pembukaan stream dan potongan isi pertama bisa lewat
+// >100 detik (model lambat / thinking panjang). Proxy di tengah (9router,
+// cloudflared, nginx) memutus koneksi yang diam; hasilnya klien melihat 503
+// padahal upstream masih bekerja. Komentar SSE (`: keepalive`) diabaikan
+// klien OpenAI - tidak muncul sebagai konten, hanya menjaga koneksi hidup.
+const heartbeatInterval = 15 * time.Second
+
+// writeRaw menulis langsung ke klien dengan kunci, lalu flush.
+func (s *sseWriter) writeRaw(format string, args ...interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fmt.Fprintf(s.w, format, args...)
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+func (s *sseWriter) startHeartbeat() {
+	s.hbOnce.Do(func() {
+		s.hbStop = make(chan struct{})
+		go func() {
+			t := time.NewTicker(heartbeatInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-s.hbStop:
+					return
+				case <-t.C:
+					s.writeRaw(": keepalive\n\n")
+				}
+			}
+		}()
+	})
+}
+
+func (s *sseWriter) stopHeartbeat() {
+	if s.hbStop != nil {
+		close(s.hbStop)
+		s.hbStop = nil
+	}
 }
 
 func newSSEWriter(w http.ResponseWriter, id string, created int64, model string) *sseWriter {
@@ -49,6 +101,7 @@ func (s *sseWriter) start() {
 	s.w.Header().Set("Access-Control-Allow-Origin", "*")
 	s.w.WriteHeader(200)
 	s.chunk(map[string]interface{}{"role": "assistant"}, nil, nil)
+	s.startHeartbeat()
 }
 
 func (s *sseWriter) chunk(delta map[string]interface{}, finish interface{}, usage map[string]int) {
@@ -67,10 +120,7 @@ func (s *sseWriter) chunk(delta map[string]interface{}, finish interface{}, usag
 		c["usage"] = usage
 	}
 	b, _ := json.Marshal(c)
-	fmt.Fprintf(s.w, "data: %s\n\n", b)
-	if s.flusher != nil {
-		s.flusher.Flush()
-	}
+	s.writeRaw("data: %s\n\n", b)
 }
 
 // SendContent 发一段正文增量，供 streamGenerate 的 onDelta 回调直接使用。
@@ -146,6 +196,7 @@ func (s *sseWriter) SendToolCalls(tcs []ToolCall) {
 // Finish 收尾：空 delta + finish_reason，可选 usage chunk，最后 [DONE]。
 func (s *sseWriter) Finish(reason string, usage map[string]int) {
 	s.start()
+	s.stopHeartbeat()
 	s.chunk(map[string]interface{}{}, reason, nil)
 	if usage != nil {
 		// OpenAI 的 usage chunk：choices 为空数组
@@ -156,18 +207,16 @@ func (s *sseWriter) Finish(reason string, usage map[string]int) {
 			"usage":   usage,
 		}
 		b, _ := json.Marshal(c)
-		fmt.Fprintf(s.w, "data: %s\n\n", b)
+		s.writeRaw("data: %s\n\n", b)
 	}
-	fmt.Fprintf(s.w, "data: [DONE]\n\n")
-	if s.flusher != nil {
-		s.flusher.Flush()
-	}
+	s.writeRaw("data: [DONE]\n\n")
 }
 
 // Fail 在已经开流之后出错时用：发一个带 error 的 chunk 再收尾。
 // 此时 HTTP 状态码已经是 200，改不了了。
 func (s *sseWriter) Fail(err error) {
 	s.start()
+	s.stopHeartbeat()
 	c := map[string]interface{}{
 		"id": s.id, "object": "chat.completion.chunk",
 		"created": s.created, "model": s.model,
@@ -175,9 +224,6 @@ func (s *sseWriter) Fail(err error) {
 		"error":   map[string]string{"message": err.Error(), "type": "upstream_error"},
 	}
 	b, _ := json.Marshal(c)
-	fmt.Fprintf(s.w, "data: %s\n\n", b)
-	fmt.Fprintf(s.w, "data: [DONE]\n\n")
-	if s.flusher != nil {
-		s.flusher.Flush()
-	}
+	s.writeRaw("data: %s\n\n", b)
+	s.writeRaw("data: [DONE]\n\n")
 }
