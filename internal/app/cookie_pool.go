@@ -514,14 +514,20 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 }
 
 // modelDenyTTL adalah berapa lama satu pasangan (akun, model) dihindari setelah
-// Google menjawab dengan model lain.
+// Google menjawab dengan model lain. Bisa diatur lewat runtime config
+// (model_deny_ttl_sec); nilai <= 0 jatuh kembali ke default.
 //
 // Ini BUKAN penilaian "akun mati" — akunnya sehat, hanya tidak berhak atas model
 // itu untuk sementara (paling sering: kuota preview harian habis). Tanpa cooldown,
 // setiap request mengulang perjalanan 10-20 detik ke Google untuk hasil yang sama
-// persis, dan klien hanya melihat 502 yang lambat. 15 menit cukup untuk melewati
-// lonjakan, tapi tetap pendek supaya model yang pulih cepat terpakai lagi.
-const modelDenyTTL = 5 * time.Minute
+// persis, dan klien hanya melihat 502 yang lambat.
+func modelDenyTTL() time.Duration {
+	sec := rtCfg().ModelDenyTTLSec
+	if sec <= 0 {
+		sec = 120
+	}
+	return time.Duration(sec) * time.Second
+}
 
 var (
 	modelDenyMu sync.Mutex
@@ -545,7 +551,7 @@ func markModelDenied(acctID int64, mc ModelConfig) {
 		return
 	}
 	modelDenyMu.Lock()
-	modelDeny[modelDenyKey(acctID, mc)] = time.Now().Add(modelDenyTTL).Unix()
+	modelDeny[modelDenyKey(acctID, mc)] = time.Now().Add(modelDenyTTL()).Unix()
 	modelDenyMu.Unlock()
 }
 

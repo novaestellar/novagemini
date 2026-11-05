@@ -56,6 +56,10 @@ type Config struct {
 	// cooldown, tunggu sisa cooldown terdekat sampai batas ini sebelum menyerah.
 	// 0 = tidak pernah menunggu (perilaku lama: tolak instan). Default 10.
 	DenyWaitBudgetSec int `json:"deny_wait_budget_sec"`
+	// ModelDenyTTLSec: cooldown per (akun, model) setelah Google menyajikan model
+	// lain. Default 120: cukup melewati lonjakan, cukup pendek supaya model yang
+	// hanya dimiliki sedikit akun (3.8 Flash, Argon) tidak mati 5 menit penuh.
+	ModelDenyTTLSec int `json:"model_deny_ttl_sec"`
 	// 是否走 Gemini 原生 conversation_id 服务端多轮。默认 false，见 conversation.go。
 	MultiTurn bool `json:"multi_turn"`
 	// 出完结果是否自动删掉 gemini.google.com 上留下的这条会话（#19，rpc GzXR5e）。
@@ -115,6 +119,7 @@ func defaultConfig() Config {
 		// 135,990 字节各 1/3，141,920 字节各 1/3。取 128000 留一点余量。
 		MaxPromptBytes:         128000,
 		DenyWaitBudgetSec:      10,
+		ModelDenyTTLSec:        120,
 		MultiTurn:              false,
 		AutoDeleteConversation: false,
 		AnonFirst:              false,

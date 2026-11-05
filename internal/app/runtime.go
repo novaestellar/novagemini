@@ -48,6 +48,10 @@ type RuntimeConfig struct {
 	// DenyWaitBudgetSec: batas tunggu (detik) ketika semua kandidat akun untuk
 	// sebuah model sedang cooldown. 0 = tolak instan seperti dulu.
 	DenyWaitBudgetSec int `json:"deny_wait_budget_sec"`
+	// ModelDenyTTLSec: berapa lama satu pasangan (akun, model) dihindari setelah
+	// Google menyajikan model lain. Makin pendek makin cepat pulih, tapi makin
+	// sering mengulang perjalanan 10-20 detik ke akun yang sama.
+	ModelDenyTTLSec int `json:"model_deny_ttl_sec"`
 	// MultiTurn 开启后走 Gemini 原生 conversation_id 服务端多轮：按历史前缀识别续接，
 	// 命中就只发最新一句、历史留服务端，绕开单请求字节墙。匿名/登录都行，见 conversation.go。
 	// 默认 false（保持现有"每轮拼全量 prompt"行为）。实测多轮不放大上下文窗口，只让长
@@ -99,6 +103,7 @@ func initRuntimeConfig() {
 		GeminiBLAuto:      cfg.GeminiBLAuto,
 		MaxPromptBytes:    cfg.MaxPromptBytes,
 		DenyWaitBudgetSec: cfg.DenyWaitBudgetSec,
+		ModelDenyTTLSec:   cfg.ModelDenyTTLSec,
 		MultiTurn:         cfg.MultiTurn,
 
 		AutoDeleteConversation: cfg.AutoDeleteConversation,
