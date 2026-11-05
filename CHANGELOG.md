@@ -2,6 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.24.0
+
+### 新增
+
+- **浏览器会话保活成为内置功能（`browser_mirror.go`）**。以前「会话归浏览器所有」的账号
+  (`rotate_disabled=1`) 只能靠手工 `cookie_grab.py sync` 刷新：两次 sync 之间，服务端一直用
+  浏览器已经转走的 `__Secure-1PSIDTS`,这正是「Argon 时好时坏」的来源之一——请求带着旧 token
+  出门,Google 偶尔接受偶尔不接受。
+  现在服务端每 20 分钟自己读一次该账号绑定的 Firefox 配置(`cookies.sqlite`),把浏览器手里的
+  最新 cookie 复制过来。**这是读取,不是轮转**:Firefox 的 cookie 明文存放在 `cookies.sqlite`,
+  浏览器仍然是会话的唯一主人,所以注释在 `CookieAccount.RotateDisabled` 里警告的
+  「两个主人一个会话 → 一方出现 no SNlM0e」不会发生。
+  - 读取前先把三个文件(`cookies.sqlite` + `-wal` + `-shm`)复制到临时目录再打开:Firefox 以
+    WAL 模式持有该库,直接读会漏掉最新提交甚至在浏览器运行时直接失败。 profil 本身从不被写。
+  - **身份保护**:新增 `cookie_sid` 列存下同步时的 SID 指纹。浏览器只轮转 `1PSIDTS`,不动
+    `SID`,所以一旦 `cookie_source` 指错配置(指向别的账号),SID 对不上,覆盖会被拒绝——一个错
+    别字不可能让账号被当成别人的 Google 账号服务。没有指纹的账号直接跳过。
+  - 判据:`TestReadFirefoxCookiesExtractsGoogleSession`(合成 `moz_cookies` 表:必读的三个 key
+    必须读到、非 Google 与过期 cookie 不得混入)、`TestBrowserSessionUsableRejectsLogout`、
+    `TestParseBrowserSource`、`TestCookieValueSIDStableAcrossRotation`(证明 SID 在轮转下稳定,
+    否则保护会静默失效)、`TestReadFirefoxCookiesMissingProfile`。
+  - 面板「Cookie 池」新增 `cookie_source` 列;`cookie_grab.py sync/import` 现在会自动带上
+    `cookie_source` 与 `cookie_sid`。
+
+### 修复
+
+- **媒体门禁不再要求「15 分钟内有成功会话」**。旧判据把「池子最近没被用过」当成「会话死了」:
+  只要连续 15 分钟没有聊天请求,music/video/image/canvas 就一律 503,而它们自己永远不会
+  `last_ok_at`,于是越闲置越用不了。现在改用 15 分钟能力探针给出的 `alive` 来判断——那才是
+  对「会话是否活着」的正确回答。错误信息也改为英文,与 API 其余部分一致。
+
 ## 4.23.0
 
 ### 修复

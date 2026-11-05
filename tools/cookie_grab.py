@@ -42,6 +42,17 @@ import urllib.request
 from ctypes import wintypes
 from pathlib import Path
 
+def _cookie_value(header: str, name: str) -> str:
+    """Ambil satu nilai cookie dari string header (dipakai untuk cookie_sid)."""
+    for part in header.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k.strip() == name:
+                return v.strip()
+    return ""
+
+
 # Cookie yang wajib ada agar NovaGemini bisa menghitung SAPISIDHASH dan
 # mempertahankan sesi. Urutan ini juga urutan penulisan header.
 PREFERRED = [
@@ -919,6 +930,10 @@ def cmd_sync(args) -> int:
     payload: dict = {"cookie": header}
     if not args.keep_rotate:
         payload["rotate_disabled"] = True
+        # Cermin berkala di server membaca profil ini; cookie_sid adalah
+        # pengaman identitas (server menolak menimpa kalau SID tidak cocok).
+        payload["cookie_source"] = "firefox:" + args.profile.split(":", 1)[-1]
+        payload["cookie_sid"] = _cookie_value(header, "SID")
     try:
         admin_patch(args.base, args.api_key, int(target["id"]), payload)
     except Exception as ex:
@@ -1139,6 +1154,8 @@ def cmd_batch(args) -> int:
                 payload: dict = {"cookie": header}
                 if not args.keep_rotate:
                     payload["rotate_disabled"] = True
+                    payload["cookie_source"] = "firefox:" + args.profile.split(":", 1)[-1]
+                    payload["cookie_sid"] = _cookie_value(header, "SID")
                 admin_patch(args.base, args.api_key, int(existing["id"]), payload)
                 print(f"  {name:22s} PERBARUI #{existing['id']} ({existing.get('label')}) — {detail}")
                 updated += 1

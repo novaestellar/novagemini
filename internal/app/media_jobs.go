@@ -207,15 +207,25 @@ func mediaPoolHealthy(maxAge time.Duration) (bool, string) {
 			return true, ""
 		}
 	}
-	// Tidak ada yang baru sukses. Kalau ada akun yang belum pernah dipakai sama
-	// sekali, izinkan satu percobaan - jangan menghukum pool yang baru diisi.
+	// Tidak ada yang baru sukses. Itu BUKAN bukti mati: pool yang sedang tidak
+	// dipakai (tidak ada permintaan chat selama 15 menit) akan selalu gagal di
+	// sini, sementara probe 15 menit sudah menjawab liveness dengan tepat.
+	// Nilai probe yang dipakai, bukan kebaruan permintaan - kalau tidak, media
+	// hanya bisa dipakai kalau ada yang mengobrol lebih dulu.
 	for _, a := range accounts {
-		if a.Status == "enabled" && a.LastOkAt == 0 {
+		if a.Status != "enabled" {
+			continue
+		}
+		if a.LastOkAt == 0 {
+			return true, "" // pool baru diisi, jangan dihukum
+		}
+		cap := probeForAccount(a.ID)
+		if cap.Alive || cap.CheckedAt == 0 {
 			return true, ""
 		}
 	}
-	return false, "tidak ada akun sehat di pool (semua sesi terakhir sukses > 15 menit lalu) - " +
-		"login ulang di browser lalu jalankan harvest"
+	return false, "no healthy account in the pool (every enabled session failed its " +
+		"last check) - sign in again in the browser, then re-run the sync"
 }
 
 func runMediaJob(j *mediaJob, images []pendingUpload, baseURL string) {

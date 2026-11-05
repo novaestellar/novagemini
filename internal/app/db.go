@@ -206,6 +206,17 @@ func getDB() *dbx {
 			// Sidik jari per akun: sesi dibuat oleh browser tertentu, dan memakai
 			// sidik jari lain membuat Google menganggapnya sesi curian.
 			_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN impersonate TEXT NOT NULL DEFAULT ''`)
+			// cookie_source: "firefox:<profil>" untuk akun yang sesinya dipegang browser.
+			// Tidak di-backfill dari note: note hanya teks bebas dan bisa menunjuk profil
+			// yang salah (akun pernah dipindahkan antar profil). Yang mengisi adalah alat
+			// sync, karena hanya dia yang tahu profil mana yang benar-benar dibaca.
+			_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN cookie_source TEXT NOT NULL DEFAULT ''`)
+	// cookie_sid: sidik jari SID dari profil yang cookie_source tunjuk. Cermin
+	// profil (browser_mirror.go) hanya menimpa kalau SID yang dibaca masih sama -
+	// kalau cookie_source keliru menunjuk profil akun lain, SID tak akan cocok dan
+	// penimpanan dibatalkan, jadi akun tidak bisa terganti identitas oleh salah
+	// ketik. Kosong = belum pernah diverifikasi, cermin dilewati.
+	_, _ = conn.Exec(`ALTER TABLE accounts ADD COLUMN cookie_sid TEXT NOT NULL DEFAULT ''`)
 
 			// Kunci per klien: satu baris per klien, dengan kuota sendiri.
 			_, _ = conn.Exec(`CREATE TABLE IF NOT EXISTS client_keys (

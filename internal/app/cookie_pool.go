@@ -45,6 +45,18 @@ type CookieAccount struct {
 
 	// TierOverride: "pro"/"free" yang ditetapkan operator. Kosong = ikut probe.
 	TierOverride string `json:"tier_override"`
+
+	// CookieSource: dari mana cookie akun ini berasal, mis. "firefox:animainventi".
+	// Hanya diisi oleh alat sync (cookie_grab.py) karena hanya dia yang tahu
+	// profil mana yang dipakai. Kalau terisi DAN akun milik browser, mirror
+	// berkala (browser_mirror.go) menyegarkan salinan server dari profil itu -
+	// membaca, bukan memutar, jadi tetap satu pemilik sesi.
+	CookieSource string `json:"cookie_source"`
+	// CookieSID: sidik jari SID dari profil yang cookie_source tunjuk. Cermin
+	// profil (browser_mirror.go) menolak menimpa kalau SID yang dibaca dari
+	// profil tidak cocok - jadi cookie_source yang salah ketik tidak bisa
+	// menukar identitas akun. Kosong = belum diverifikasi, cermin dilewati.
+	CookieSID string `json:"cookie_sid"`
 }
 
 // splitCookiePairs 把 "k=v; k=v" 拆成键值对。
@@ -156,7 +168,7 @@ func accountInsert(label, cookie, note string) (int64, error) {
 // accountList 返回池里全部账号，按 id 升序。
 func accountList() []CookieAccount {
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override, impersonate
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override, impersonate, cookie_source, cookie_sid
 		 FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil
@@ -167,7 +179,7 @@ func accountList() []CookieAccount {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
 			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount,
-			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride, &a.Impersonate); err != nil {
+			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride, &a.Impersonate, &a.CookieSource, &a.CookieSID); err != nil {
 			continue
 		}
 		out = append(out, a)
@@ -182,11 +194,11 @@ func accountList() []CookieAccount {
 func accountByID(id int64) *CookieAccount {
 	var a CookieAccount
 	err := getDB().QueryRow(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override, impersonate
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, rotate_disabled, auth_user, tier_override, impersonate, cookie_source, cookie_sid
 		 FROM accounts WHERE id=?`, id).
 		Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
 			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount,
-			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride, &a.Impersonate)
+			&a.ProxyID, &a.RotateDisabled, &a.AuthUser, &a.TierOverride, &a.Impersonate, &a.CookieSource, &a.CookieSID)
 	if err != nil {
 		return nil
 	}
@@ -247,6 +259,20 @@ func accountSetCookie(id int64, cookie string) error {
 }
 
 // accountSetTierOverride menyimpan tier pilihan operator ("pro"/"free"/kosong).
+// accountSetCookieSource mencatat profil browser asal cookie akun ini, sekaligus
+// sidik jari SID dari cookie yang sedang tersimpan. Dipakai alat sync supaya
+// mirror berkala tahu file mana yang harus dibaca - dan bisa memastikan profil
+// itu memang masih memegang akun yang sama.
+func accountSetCookieSource(id int64, src string) error {
+	a := accountByID(id)
+	if a == nil {
+		return fmt.Errorf("akun #%d tidak ada", id)
+	}
+	_, err := getDB().Exec(`UPDATE accounts SET cookie_source=?, cookie_sid=? WHERE id=?`,
+		src, cookieValue(a.Cookie, "SID"), id)
+	return err
+}
+
 func accountSetTierOverride(id int64, tier string) error {
 	tier = strings.ToLower(strings.TrimSpace(tier))
 	if tier != "" && tier != "pro" && tier != "free" {
@@ -715,7 +741,7 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 	// 出口就按"无偏好"选了；等换号换到好号，出口已经定死 —— 于是好号的出口
 	// 粘性被坏号带偏。实测 1 好 2 坏时出口在两个代理间对半分。
 	rows, err := getDB().Query(
-		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, auth_user, tier_override, impersonate
+		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id, auth_user, tier_override, impersonate, cookie_source, cookie_sid
 		 FROM accounts WHERE status='enabled' ORDER BY fail_count ASC, last_used_at ASC, id ASC`)
 	if err != nil {
 		return nil, false
@@ -745,7 +771,7 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 	for rows.Next() {
 		var a CookieAccount
 		if err := rows.Scan(&a.ID, &a.Label, &a.Cookie, &a.Status, &a.Note,
-			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &a.AuthUser, &a.TierOverride, &a.Impersonate); err != nil {
+			&a.CreatedAt, &a.LastUsedAt, &a.LastOkAt, &a.LastError, &a.FailCount, &a.ProxyID, &a.AuthUser, &a.TierOverride, &a.Impersonate, &a.CookieSource, &a.CookieSID); err != nil {
 			continue
 		}
 		if skip[a.ID] {

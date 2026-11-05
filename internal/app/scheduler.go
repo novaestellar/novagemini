@@ -34,12 +34,16 @@ func startScheduler() {
 		// tabel account_caps tetap segar supaya pemilihan akun tidak memakai
 		// data basi (mis. kuota image yang sudah habis dipakai).
 		probe := time.NewTicker(probeInterval)
+		// Cermin browser: segarkan salinan cookie akun milik browser dari profil
+		// Firefox-nya. Ini membaca, tidak memutar - lihat browser_mirror.go.
+		mirror := time.NewTicker(browserMirrorInterval)
 		defer hourly.Stop()
 		defer daily.Stop()
 		defer retention.Stop()
 		defer proxyReload.Stop()
 		defer rotate.Stop()
 		defer probe.Stop()
+		defer mirror.Stop()
 
 		for {
 			select {
@@ -58,6 +62,10 @@ func startScheduler() {
 					logf("[probe] refresh kapabilitas %d akun", enabled)
 					_ = total
 					probeAllAccounts()
+				}
+			case <-mirror.C:
+				if n := mirrorBrowserOwnedAccounts(); n > 0 {
+					logf("[mirror] %d akun milik browser disegarkan dari profil", n)
 				}
 			}
 		}

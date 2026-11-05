@@ -69,6 +69,7 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 		"proxy_name":   proxyNameByID(a.ProxyID),
 		// rotate_disabled=1: sesi dipegang browser, NovaGemini tidak merotasi.
 		"rotate_disabled": a.RotateDisabled != 0,
+		"cookie_source":   a.CookieSource,
 		// auth_user: nomor akun di dalam satu profil browser (Google multi-login).
 		"auth_user": a.AuthUser,
 		// tier: hasil probe terakhir (atau penetapan operator), diambil dari
