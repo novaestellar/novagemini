@@ -513,6 +513,21 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 	return pickCookieAccountFor(ModelConfig{}, skip)
 }
 
+// modelRequiresPaidAccount menjawab apakah model ini HANYA bisa dilayani akun
+// berbayar. Satu sumber kebenaran, dipakai pemilih akun.
+//
+// Terukur di mesin ini (2026-11-05): akun free meminta 3.8 Flash dan Google
+// menurunkannya ke 3.6 Flash - jawaban 200 dengan model salah. Akun free meminta
+// Argon diturunkan ke 3.5 Flash-Lite. Keduanya mustahil dibedakan klien, jadi
+// akun free tidak boleh jadi kandidat sama sekali untuk model di daftar ini.
+func modelRequiresPaidAccount(mc ModelConfig) bool {
+	switch mc.HexID {
+	case hexArgon4, hexPro31, hexFlash38:
+		return true
+	}
+	return false
+}
+
 // modelDenyTTL adalah berapa lama satu pasangan (akun, model) dihindari setelah
 // Google menjawab dengan model lain. Bisa diatur lewat runtime config
 // (model_deny_ttl_sec); nilai <= 0 jatuh kembali ke default.
@@ -800,10 +815,18 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 			case cap.supportsModelPaidOnly(mc):
 				prio = 1
 			default:
+				// Model berbayar (Argon, 3.1 Pro, 3.8/3.7 Flash) TIDAK boleh
+				// dilayani akun free sekalipun sebagai usaha terakhir: Google
+				// tidak menolaknya, dia menjawab dengan model lain - terukur
+				// 3.8 diturunkan ke 3.6. Itu jawaban salah yang tidak bisa
+				// dibedakan klien, jadi lebih baik tidak memilih sama sekali.
+				if modelRequiresPaidAccount(mc) {
+					continue
+				}
 				// Daftar model bukan bukti: lima akun berlabel tier=free terbukti
 				// melayani "4 Argon" (diuji 2026-11-03, upstream bilang 4 Argon).
 				// Jadi akun tetap jadi kandidat paling akhir, bukan dibuang -
-				// deteksi downgrade + cooldown 5 menit yang memutuskan, bukan label.
+				// deteksi downgrade + cooldown yang memutuskan, bukan label.
 				prio = 0
 			}
 		}

@@ -438,9 +438,15 @@ func (c AccountCapability) supportsModel(mc ModelConfig) bool {
 //
 // Akun FREE tidak pernah lolos di sini: model ini selalu dijawab model lain oleh
 // akun free, dan deteksi downgrade mengubahnya jadi 502 pasti.
+//
+// 2026-11-05: gerbang ini tadinya HANYA hexArgon4. Akibatnya 3.1 Pro dan
+// 3.8/3.7 Flash tidak digatek sama sekali - akun free jatuh ke "usaha terakhir"
+// di pemilih, dipilih, lalu diturunkan Google ke 3.6 Flash. Terukur di mesin ini:
+// gemini-3.8-flash memakai akun non-pro dan berakhir 502 downgrade. Operator
+// mengoreksi: Argon, 3.1 Pro, 3.7, 3.8 semuanya khusus akun pro.
 func (c AccountCapability) supportsModelPaidOnly(mc ModelConfig) bool {
 	switch mc.HexID {
-	case hexArgon4:
+	case hexArgon4, hexPro31, hexFlash38:
 		return c.Tier == "pro"
 	}
 	return false

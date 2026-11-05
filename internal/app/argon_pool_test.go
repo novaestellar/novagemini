@@ -42,13 +42,47 @@ func TestArgonFallsBackToPaidAccountWithoutRollout(t *testing.T) {
 		t.Fatalf("tingkat kedua harus akun berbayar tanpa rollout; dapat %+v ok=%v", got, ok)
 	}
 
-	// 3. akun free bukan lagi tersaring habis. Uji 2026-11-03: lima akun yang
-	//    dilabeli tier=free semuanya melayani "4 Argon" saat diminta, jadi label
-	//    tier tidak boleh membuang kandidat — dia cuma pilihan paling akhir,
-	//    dan deteksi downgrade + cooldown yang memutuskan.
-	got, ok = pickCookieAccountFor(argon, map[int64]bool{proven: true, paid: true})
-	if !ok || got == nil || got.ID != free {
-		t.Fatalf("akun free harus jadi cadangan terakhir, bukan dibuang; dapat %+v ok=%v", got, ok)
+	// 3. akun free TIDAK boleh dipilih untuk Argon, bahkan sebagai usaha
+	//    terakhir. Terukur 2026-11-05: akun free meminta Argon/3.8 dan Google
+	//    menurunkannya ke 3.5 Flash-Lite / 3.6 Flash - jawaban 200 dengan model
+	//    salah yang mustahil dibedakan klien. Operator mengoreksi: Argon, 3.1 Pro,
+	//    3.7, 3.8 semuanya khusus akun pro. Lebih baik tidak memilih sama sekali.
+	if got, ok := pickCookieAccountFor(argon, map[int64]bool{proven: true, paid: true}); ok {
+		t.Fatalf("akun free tidak boleh jadi kandidat untuk Argon; dapat %+v", got)
+	}
+}
+
+// TestPaidGateCoversAllPaidModels: koreksi operator 2026-11-05. Gerbang pro
+// tadinya HANYA hexArgon4, jadi 3.1 Pro dan 3.8/3.7 Flash tidak digatek - akun
+// free dipilih lalu diturunkan Google ke 3.6 Flash. Keempat model ini khusus akun
+// pro, dan pemilih tidak boleh menawarkan akun free untuk mereka sekalipun.
+func TestPaidGateCoversAllPaidModels(t *testing.T) {
+	paidModels := []string{
+		"gemini-4-argon",
+		"gemini-3.1-pro",
+		"gemini-3.8-flash",
+		"gemini-3.7-flash",
+	}
+	for _, name := range paidModels {
+		m := Models[name]
+		if !modelRequiresPaidAccount(m) {
+			t.Errorf("%s harus dikenali sebagai model khusus akun pro", name)
+		}
+		pro := AccountCapability{Alive: true, Tier: "pro"}
+		if !pro.supportsModelPaidOnly(m) {
+			t.Errorf("akun pro harus lolos gerbang berbayar untuk %s", name)
+		}
+		free := AccountCapability{Alive: true, Tier: "free"}
+		if free.supportsModelPaidOnly(m) {
+			t.Errorf("akun free tidak boleh lolos gerbang berbayar untuk %s", name)
+		}
+	}
+
+	// Model yang memang bisa dilayani free TIDAK boleh ikut digatek.
+	for _, name := range []string{"gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash-thinking"} {
+		if modelRequiresPaidAccount(Models[name]) {
+			t.Errorf("%s seharusnya bisa dilayani akun free", name)
+		}
 	}
 }
 
@@ -66,7 +100,7 @@ func TestSupportsModelPaidOnlyArgon(t *testing.T) {
 		t.Fatal("akun free tidak boleh lolos di tingkat kedua")
 	}
 	if freeAcct.supportsModelPaidOnly(Models["gemini-3.6-flash"]) {
-		t.Fatal("supportsModelPaidOnly hanya berlaku untuk Argon")
+		t.Fatal("supportsModelPaidOnly hanya berlaku untuk model berbayar")
 	}
 	// tier "unknown" (belum diprobe) bukan bukti berbayar.
 	if (AccountCapability{Alive: true}).supportsModelPaidOnly(argon) {
