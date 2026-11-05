@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
 
-const Version = "4.22.0"
+const Version = "4.23.0"
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	body, _ := json.Marshal(data)
@@ -207,6 +208,8 @@ func httpStatusForError(err error) int {
 		return http.StatusTooManyRequests
 	case *PromptTooLongError:
 		return http.StatusBadRequest
+	case *PoolUnavailableError:
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusBadGateway
 	}
@@ -415,6 +418,20 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"message": rle.Error(),
 				"type":    "rate_limit_exceeded",
 				"code":    "ip_slot_full",
+			}})
+			return
+		}
+		if pue, ok := err.(*PoolUnavailableError); ok {
+			// 503 + Retry-After: kondisinya sementara dan request yang sama
+			// berhasil setelah cooldown lewat, jadi klien harus mengulang -
+			// bukan menganggap promptnya salah seperti pada 400.
+			if pue.RetryAfterSec > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(pue.RetryAfterSec))
+			}
+			writeJSON(w, 503, map[string]interface{}{"error": map[string]string{
+				"message": pue.Error(),
+				"type":    "server_error",
+				"code":    "pool_unavailable",
 			}})
 			return
 		}
@@ -790,6 +807,20 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 				"message": rle.Error(),
 				"type":    "rate_limit_exceeded",
 				"code":    "ip_slot_full",
+			}})
+			return
+		}
+		if pue, ok := err.(*PoolUnavailableError); ok {
+			// 503 + Retry-After: kondisinya sementara dan request yang sama
+			// berhasil setelah cooldown lewat, jadi klien harus mengulang -
+			// bukan menganggap promptnya salah seperti pada 400.
+			if pue.RetryAfterSec > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(pue.RetryAfterSec))
+			}
+			writeJSON(w, 503, map[string]interface{}{"error": map[string]string{
+				"message": pue.Error(),
+				"type":    "server_error",
+				"code":    "pool_unavailable",
 			}})
 			return
 		}

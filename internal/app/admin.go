@@ -701,6 +701,9 @@ func classifyError(errStr string) string {
 		return "upstream_rejected"
 	case strings.Contains(errStr, "slot full") || strings.Contains(errStr, "limit reached"):
 		return "rate_limited_local"
+	case strings.Contains(errStr, "no signed-in account is free for"):
+		// Pool sedang cooldown: sementara, akan sembuh sendiri.
+		return "pool_cooling_down"
 	case strings.Contains(errStr, "upstream HTTP 302"), strings.Contains(errStr, "sorry"):
 		return "blocked_sorry"
 	case strings.Contains(errStr, "upstream HTTP 429"):

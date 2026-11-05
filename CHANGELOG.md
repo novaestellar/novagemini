@@ -2,6 +2,28 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.23.0
+
+### 修复
+
+- **账号池整体冷却时不再"瞬间判死",改用等待 + 可重试的 503**。当某个模型的所有候选账号都因为
+  「Google 回了别的模型」进入 5 分钟冷却时,`prompt > max_prompt_bytes` 的请求(匿名路径无法
+  上传附件,必须走登录账号)会在几毫秒内收到 `400 context_length_exceeded`,正文写着"all N
+  enabled account(s) were just turned down by Google ... or shorten the prompt"。给客户端的
+  信号是「你的 prompt 有问题,别重试了」—— agentic 客户端随即放弃或压缩上下文,而实际情况
+  只是池子暂时空了。实测同一条 40 万字节的 prompt 在 09:32:07 被 #17 降级拒绝,4 秒后的重试
+  就撞上这段循环,而**同一分钟里匿名路径的 Argon 请求仍在正常出「4 Argon」**。
+  - 现在:先看冷却里最近到期的那一个,若在 `deny_wait_budget_sec`(新增运行配置,默认 10 秒)
+    之内,就等它到期再重选一次;仍然没有可用账号时,返回 **503 + `Retry-After` + `code:
+    pool_unavailable`**,类型 `server_error`,不再谎报 `context_length_exceeded`。
+  - 判据:`TestPoolUnavailableWhenAllAccountsCoolingDown` 直接向 deny map 注入冷却并断言拿到
+    `*PoolUnavailableError` 而不是 `PromptTooLongError`;`TestModelDenySoonestPicksNearestAndMatchesOnlySameVariant`
+    锁定"只匹配同一变体、取最近到期";`TestPoolUnavailableIsRetryableNotBadRequest` 锁定状态码
+    映射(503 vs 400)。
+  - 全部账号且都不可用时,仍然给出真正的 `context_length_exceeded`(那才是 prompt 尺寸问题)。
+
+- **面板新增 `pool_cooling_down` 分类**,让"池子冷却"和"prompt 太长"在后台看着不再是同一件事。
+
 ## 4.22.1
 
 ### 修复

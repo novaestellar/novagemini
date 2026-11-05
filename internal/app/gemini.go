@@ -460,6 +460,18 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 	if !anonFirstEligible(mc, len(pending) > 0, len(prompt)) {
 		if a, ok := pickCookieAccountFor(mc, nil); ok {
 			acct = a
+		} else if d, ok := modelDenySoonest(mc); ok && d <= denyWaitBudget() {
+			// Semua kandidat cooldown untuk model ini. Cooldown itu heuristik
+			// ("Google menyajikan model lain" = jendela kuota akun itu tutup),
+			// bukan hukum - dan menunggu sisa terdekat jauh lebih berguna
+			// daripada menolak instan, terutama untuk prompt besar yang tidak
+			// boleh lewat jalur anonim sama sekali.
+			logf("[cookie] %s: semua kandidat cooldown, tunggu %s lalu pilih ulang",
+				modelLabel(mc), d.Round(time.Second))
+			time.Sleep(d + 200*time.Millisecond)
+			if a, ok := pickCookieAccountFor(mc, nil); ok {
+				acct = a
+			}
 		}
 	}
 	// WAJIB cookie untuk prompt kebesaran — bukan preferensi.
@@ -474,19 +486,33 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 		oversized := budget > 0 && len(prompt) > budget
 		if oversized {
 			_, enabled := accountCount()
-			var why string
+			// Pool yang sedang cooldown BUKAN soal ukuran prompt dan bukan
+			// kegagalan permanen: begitu cooldown terdekat lewat, request yang
+			// sama berhasil. Karena itu jawab 503 (klien boleh ulang), bukan
+			// 400 context_length_exceeded yang dibaca klien sebagai "prompt-nya
+			// salah, jangan diulang" - kekeliruan kelas galat itulah yang bikin
+			// operator melihat notifikasi galat permanen padahal sementara.
 			if enabled > 0 {
-				why = fmt.Sprintf("all %d enabled account(s) were just turned down by "+
-					"Google for %s (they are on a %s cooldown after serving a different "+
-					"model, which usually means that model's daily quota is exhausted)",
-					enabled, modelLabel(mc), modelDenyTTL)
-			} else {
-				why = fmt.Sprintf("no enabled account supports %s", modelLabel(mc))
+				waitSec := 0
+				if d, ok := modelDenySoonest(mc); ok {
+					waitSec = int(d.Seconds() + 0.5)
+				}
+				detail := fmt.Sprintf("no signed-in account is free for %s right now: "+
+					"the prompt is %d bytes so the anonymous path cannot carry it as an "+
+					"attachment, and every enabled account is cooling down after Google "+
+					"served a different model for it. This clears by itself - the nearest "+
+					"account frees up in about %ds; the same request will go through then.",
+					modelLabel(mc), len(prompt), waitSec)
+				return &StreamResult{}, &PoolUnavailableError{
+					Model: modelLabel(mc), Enabled: enabled, PromptBytes: len(prompt),
+					RetryAfterSec: waitSec, Detail: detail,
+				}
 			}
+			why := fmt.Sprintf("no enabled account supports %s", modelLabel(mc))
 			msg := fmt.Sprintf("prompt is %d bytes and the anonymous path cannot upload "+
 				"attachments, so it can only be sent through a signed-in account; %s. "+
-				"Add or re-enable an account in the admin panel (Cookie pool), wait for "+
-				"the quota to reset, or shorten the prompt", len(prompt), why)
+				"Add or re-enable an account in the admin panel (Cookie pool).",
+				len(prompt), why)
 			return &StreamResult{}, &PromptTooLongError{
 				Bytes: len(prompt), Budget: budget, HasCookie: false, Detail: msg,
 			}

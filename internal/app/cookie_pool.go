@@ -542,6 +542,60 @@ func modelDenied(acctID int64, mc ModelConfig) bool {
 	return true
 }
 
+// modelDenyUntil mengembalikan kapan sebuah pasangan (akun, model) berhenti
+// dihindari, atau 0 kalau tidak sedang dihindari.
+func modelDenyUntil(acctID int64, mc ModelConfig) int64 {
+	if acctID <= 0 || mc.HexID == "" {
+		return 0
+	}
+	modelDenyMu.Lock()
+	defer modelDenyMu.Unlock()
+	return modelDeny[modelDenyKey(acctID, mc)]
+}
+
+// modelDenySoonest menjawab: kalau semua kandidat untuk model ini sedang
+// cooldown, berapa lama lagi sampai yang terdekat bebas?
+//
+// Dipakai pemanggil untuk memutuskan "tunggu sebentar" versus "menyerah".
+// Alasannya konkret: cooldown lima menit untuk seluruh pool pernah membuat
+// permintaan prompt besar gagal instan selama lima menit penuh, padahal satu
+// akun mungkin bebas sepuluh detik lagi. Operator melihatnya sebagai "Argon
+// kadang jalan kadang tidak".
+func modelDenySoonest(mc ModelConfig) (time.Duration, bool) {
+	if mc.HexID == "" {
+		return 0, false
+	}
+	suffix := fmt.Sprintf("|%s|%d|%t|%d|%d",
+		mc.HexID, mc.Tool, mc.Thinking, mc.ThinkLevel, mc.Mode)
+	now := time.Now()
+	modelDenyMu.Lock()
+	defer modelDenyMu.Unlock()
+	best := time.Duration(0)
+	found := false
+	for k, until := range modelDeny {
+		if !strings.HasSuffix(k, suffix) {
+			continue
+		}
+		d := time.Unix(until, 0).Sub(now)
+		if d <= 0 {
+			continue
+		}
+		if !found || d < best {
+			best, found = d, true
+		}
+	}
+	return best, found
+}
+
+// denyWaitBudget adalah batas tunggu saat semua kandidat cooldown.
+func denyWaitBudget() time.Duration {
+	sec := rtCfg().DenyWaitBudgetSec
+	if sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
+}
+
 // provenModels mencatat akun yang SUDAH terbukti menyajikan sebuah model —
 // bukan sekadar lulus filter rollout.
 //

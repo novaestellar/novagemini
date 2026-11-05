@@ -463,3 +463,29 @@ func (e *PromptTooLongError) Error() string {
 	}
 	return base + " Shorten the conversation, the system prompt, or the tool definitions."
 }
+
+// PoolUnavailableError: permintaan sah, tapi saat ini tidak ada akun login yang
+// bisa melayaninya - semuanya sedang cooldown setelah Google menyajikan model
+// lain untuk model yang diminta.
+//
+// Dibedakan dari PromptTooLongError karena sebab dan tindakannya berbeda:
+// ukuran prompt bukan masalahnya, dan tidak ada yang perlu diubah pemanggil.
+// Yang benar adalah menunggu lalu mengulang. Karena itu ini dipetakan ke 503 +
+// header Retry-After, bukan 400 context_length_exceeded - 400 membuat klien
+// berhenti dan menampilkan galat seolah permanen, padahal kondisinya sementara.
+type PoolUnavailableError struct {
+	Model         string
+	Enabled       int
+	PromptBytes   int
+	RetryAfterSec int
+	Detail        string
+}
+
+func (e *PoolUnavailableError) Error() string {
+	if e.Detail != "" {
+		return e.Detail
+	}
+	return fmt.Sprintf("no signed-in account is free for %s right now; %d enabled "+
+		"account(s) are cooling down. Retry in about %ds.",
+		e.Model, e.Enabled, e.RetryAfterSec)
+}
