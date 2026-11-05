@@ -70,6 +70,58 @@ func TestReadFirefoxCookiesExtractsGoogleSession(t *testing.T) {
 	}
 }
 
+// TestExpiryUnitNormalisation: Firefox menyimpan expiry dalam tiga satuan yang
+// berbeda menurut versi - detik, milidetik (terukur di mesin ini), dan mikrodetik
+// PRTime. Kalau satuannya salah tebak, SEMUA cookie dinilai kedaluwarsa dan cermin
+// diam-diam tidak melakukan apa-apa sambil melaporkan "profil sudah logout".
+func TestExpiryUnitNormalisation(t *testing.T) {
+	futureSec := time.Now().Add(24 * time.Hour).Unix()
+	cases := []struct {
+		name string
+		unit int64
+	}{
+		{"detik", 1},
+		{"milidetik", 1000},
+		{"mikrodetik", 1000000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := makeFakeFirefoxProfile(t, [][4]any{
+				{"SAPISID", "sapisid-value", "google.com", futureSec * tc.unit},
+				{"__Secure-1PSID", "psid-value", ".google.com", futureSec * tc.unit},
+				{"SID", "sid-value", ".google.com", futureSec * tc.unit},
+			})
+			got, err := readFirefoxCookiesFromDir(dir, "uji")
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if len(got) != 3 {
+				t.Fatalf("satuan %s: dapat %d cookie, mau 3 - normalisasi expiry salah", tc.name, len(got))
+			}
+			if !browserSessionUsable(got) {
+				t.Fatalf("satuan %s: sesi harus usable", tc.name)
+			}
+		})
+	}
+
+	// Kedaluwarsa harus tetap terbuang dalam satuan apa pun.
+	pastSec := time.Now().Add(-24 * time.Hour).Unix()
+	for _, unit := range []int64{1, 1000, 1000000} {
+		dir := makeFakeFirefoxProfile(t, [][4]any{
+			{"SAPISID", "sapisid-value", "google.com", pastSec * unit},
+			{"__Secure-1PSID", "psid-value", ".google.com", pastSec * unit},
+			{"SID", "sid-value", ".google.com", pastSec * unit},
+		})
+		got, err := readFirefoxCookiesFromDir(dir, "uji")
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("unit %d: cookie kedaluwarsa harus terbuang, dapat %d", unit, len(got))
+		}
+	}
+}
+
 // TestBrowserSessionUsableRejectsLogout: profil yang sudah logout tidak boleh
 // dianggap sehat, supaya mirror tidak menyalin cookie kosong ke pool.
 func TestBrowserSessionUsableRejectsLogout(t *testing.T) {

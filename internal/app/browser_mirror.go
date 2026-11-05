@@ -69,8 +69,13 @@ func readFirefoxCookies(profile string) (map[string]string, error) {
 //
 // The snapshot matters: Firefox holds cookies.sqlite open in WAL mode, so
 // reading the live file can miss the newest commits or fail outright. Copying
-// the three files first makes the read independent of whether the browser is
-// running - and never touches the profile itself.
+// the database and its WAL first makes the read independent of whether the
+// browser is running - and never touches the profile itself.
+//
+// The -shm file is deliberately NOT copied: it is a rebuildable shared-memory
+// index that Firefox rewrites constantly, and a stale copy can make SQLite see
+// a WAL that does not match - the read then silently returns zero rows. Without
+// it SQLite rebuilds the index from the WAL, which is both correct and race-free.
 func readFirefoxCookiesFromDir(dir, profile string) (map[string]string, error) {
 	src := filepath.Join(dir, "cookies.sqlite")
 	if _, err := os.Stat(src); err != nil {
@@ -83,13 +88,13 @@ func readFirefoxCookiesFromDir(dir, profile string) (map[string]string, error) {
 	}
 	defer os.RemoveAll(tmp)
 
-	for _, suffix := range []string{"", "-wal", "-shm"} {
+	for _, suffix := range []string{"", "-wal"} {
 		data, err := os.ReadFile(src + suffix)
 		if err != nil {
 			if suffix == "" {
 				return nil, err
 			}
-			continue // wal/shm are optional
+			continue // no WAL means everything is already checkpointed
 		}
 		if err := os.WriteFile(filepath.Join(tmp, "cookies.sqlite"+suffix), data, 0o600); err != nil {
 			return nil, err
@@ -116,10 +121,16 @@ func readFirefoxCookiesFromDir(dir, profile string) (map[string]string, error) {
 		if err := rows.Scan(&name, &value, &expiry); err != nil {
 			continue
 		}
-		// Firefox has used both seconds and PRTime microseconds for this
-		// column depending on version; normalise before comparing.
-		if expiry > 1e11 {
+		// Firefox has used three different units for this column depending on
+		// version: seconds, PRTime microseconds, and (measured on this machine)
+		// milliseconds. Getting the unit wrong silently discards every cookie -
+		// the mirror would then log "profile logged out" forever while the
+		// browser is perfectly signed in. Pick the divisor by magnitude.
+		switch {
+		case expiry > 1e14: // microseconds (PRTime)
 			expiry = expiry / 1e6
+		case expiry > 1e11: // milliseconds
+			expiry = expiry / 1e3
 		}
 		if expiry > 0 && expiry < now {
 			continue // expired
