@@ -208,17 +208,79 @@ func TestFirefoxProfileDirUsesAppData(t *testing.T) {
 	}
 }
 
-// TestCookieValueSIDStableAcrossRotation: sidik jari memakai SID karena browser
-// memutar 1PSIDTS, bukan SID. Kalau SID ikut berubah, pengaman identitas cermin
-// akan menolak semua penyegaran dan fiturnya mati diam-diam.
-func TestCookieValueSIDStableAcrossRotation(t *testing.T) {
-	before := "SID=abc123; __Secure-1PSIDTS=old-token; SAPISID=xyz"
-	after := "SID=abc123; __Secure-1PSIDTS=NEW-rotated-token; SAPISID=xyz"
-	if cookieValue(before, "SID") != cookieValue(after, "SID") {
-		t.Fatal("SID harus stabil saat browser memutar 1PSIDTS - pengaman identitas akan rusak")
+// TestCookieHostRankWinsOverCountryDomain: profil yang pernah login di dua region
+// menyimpan dua set cookie lengkap. Memilih .google.co.id menghasilkan halaman
+// "Sign in" walau akunnya aktif - kasus nyata di profil Firefox operator. Jadi
+// peringkat host harus menang seperti di cookie_grab.py.
+func TestCookieHostRankWinsOverCountryDomain(t *testing.T) {
+	cases := []struct {
+		host string
+		want int
+		ok   bool
+	}{
+		{"gemini.google.com", -1, true},
+		{".google.com", 0, true},
+		{"google.com", 0, true},
+		{"accounts.google.com", 1, true},
+		{".google.co.id", 3, true},
+		{"google.co.id", 3, true},
+		{"example.com", 5, false},
 	}
-	if cookieValue(before, "SID") == "" {
-		t.Fatal("SID harus terbaca dari string cookie")
+	for _, tc := range cases {
+		got, ok := cookieHostRank(tc.host)
+		if ok != tc.ok || (tc.ok && got != tc.want) {
+			t.Errorf("cookieHostRank(%q) = (%d,%v), mau (%d,%v)", tc.host, got, ok, tc.want, tc.ok)
+		}
+	}
+	comRank, _ := cookieHostRank(".google.com")
+	idRank, _ := cookieHostRank(".google.co.id")
+	if comRank >= idRank {
+		t.Errorf(".google.com (rank %d) harus berperingkat lebih baik daripada .google.co.id (rank %d)", comRank, idRank)
+	}
+}
+
+// TestReadFirefoxCookiesPrefersComOverCountryDomain: kalau satu nama cookie ada di
+// .google.com dan .google.co.id, nilai yang dipakai harus yang .google.com.
+func TestReadFirefoxCookiesPrefersComOverCountryDomain(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour).Unix()
+	dir := makeFakeFirefoxProfile(t, [][4]any{
+		{"SAPISID", "nilai-co-id", "google.co.id", future},
+		{"SAPISID", "nilai-com", ".google.com", future},
+		{"__Secure-1PSID", "psid-com", ".google.com", future},
+		{"SID", "sid-com", ".google.com", future},
+	})
+	got, err := readFirefoxCookiesFromDir(dir, "uji")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got["SAPISID"] != "nilai-com" {
+		t.Errorf("SAPISID harus dari .google.com, dapat %q", got["SAPISID"])
+	}
+	if len(got) != 3 {
+		t.Errorf("harus 3 cookie (bukan 4 - yang co-id kalah peringkat), dapat %d", len(got))
+	}
+}
+
+// TestReadFirefoxCookiesKeepsCountryDomainCookies: cookie yang HANYA ada di
+// domain negara tidak boleh dibuang - cermin dulu hanya membaca %google.com%
+// dan membuang semuanya, itu regresi yang membuat cookie menyusut.
+func TestReadFirefoxCookiesKeepsCountryDomainCookies(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour).Unix()
+	dir := makeFakeFirefoxProfile(t, [][4]any{
+		{"SAPISID", "sapisid", ".google.com", future},
+		{"__Secure-1PSID", "psid", ".google.com", future},
+		{"SID", "sid", ".google.com", future},
+		{"__Secure-ENID", "hanya-di-co-id", "google.co.id", future},
+	})
+	got, err := readFirefoxCookiesFromDir(dir, "uji")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got["__Secure-ENID"] != "hanya-di-co-id" {
+		t.Error("cookie yang hanya ada di domain negara tidak boleh dibuang")
+	}
+	if len(got) != 4 {
+		t.Errorf("harus 4 cookie, dapat %d", len(got))
 	}
 }
 

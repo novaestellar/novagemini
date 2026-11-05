@@ -107,7 +107,8 @@ func readFirefoxCookiesFromDir(dir, profile string) (map[string]string, error) {
 	}
 	defer db.Close()
 
-	rows, err := db.Query(`SELECT name, value, expiry FROM moz_cookies WHERE host LIKE '%google.com%'`)
+	rows, err := db.Query(`SELECT name, value, expiry, host FROM moz_cookies
+		WHERE host LIKE '%google.com' OR host LIKE '%google.co.id'`)
 	if err != nil {
 		return nil, err
 	}
@@ -115,10 +116,14 @@ func readFirefoxCookiesFromDir(dir, profile string) (map[string]string, error) {
 
 	now := time.Now().Unix()
 	out := map[string]string{}
+	rank := map[string]int{}
 	for rows.Next() {
-		var name, value string
+		var name, value, host string
 		var expiry int64
-		if err := rows.Scan(&name, &value, &expiry); err != nil {
+		if err := rows.Scan(&name, &value, &expiry, &host); err != nil {
+			continue
+		}
+		if name == "" || value == "" {
 			continue
 		}
 		// Firefox has used three different units for this column depending on
@@ -135,15 +140,43 @@ func readFirefoxCookiesFromDir(dir, profile string) (map[string]string, error) {
 		if expiry > 0 && expiry < now {
 			continue // expired
 		}
-		if name == "" || value == "" {
+		// Satu nama cookie bisa muncul di beberapa host (profil yang pernah login
+		// di dua region menyimpan dua set lengkap). Yang dipakai adalah host
+		// berperingkat terendah - .google.com menang atas .google.co.id, karena
+		// sesi Gemini selalu di .google.com dan memilih domain negara menghasilkan
+		// halaman "Sign in" walau akunnya aktif. Sama seperti cookie_grab.py.
+		r, ok := cookieHostRank(host)
+		if !ok {
+			r = 5
+		}
+		if cur, seen := rank[name]; seen && cur <= r {
 			continue
 		}
+		rank[name] = r
 		out[name] = value
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// cookieHostRank mirrors COOKIE_NAME_RANK in tools/cookie_grab.py. A profile
+// that has signed in during two different regions holds two complete cookie
+// sets, and picking the country domain produces a "Sign in" page even though
+// the account is plainly active.
+func cookieHostRank(host string) (int, bool) {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "gemini.google.com":
+		return -1, true
+	case ".google.com", "google.com":
+		return 0, true
+	case "accounts.google.com":
+		return 1, true
+	case ".google.co.id", "google.co.id":
+		return 3, true
+	}
+	return 5, false
 }
 
 // cookieHeaderFromMap rebuilds a "k=v; k=v" header from a cookie map.
