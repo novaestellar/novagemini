@@ -843,6 +843,20 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 		}
 	}
 
+	// Penolakan generik ("I'm having a hard time fulfilling your request") adalah
+	// beban sesaat di sisi Google, bukan kuota dan bukan akses. Berpindah akun
+	// membantu, tapi tiap perpindahan berarti satu perjalanan penuh ke Google
+	// (10-20 detik). Penghitung terpisah ini yang membatasinya.
+	//
+	// Dulu batasnya memakai `attempt`, tapi blok pindah-akun menulis `attempt--`
+	// supaya perulangan tidak menghabiskan jatah retry — efek sampingnya syarat
+	// `attempt < maxRefusalRetries-1` SELALU benar, sehingga satu penolakan
+	// berjalan melewati SEMUA akun di pool. Terukur: 11 akun x ~20 detik = 223
+	// detik untuk satu permintaan yang akhirnya tetap gagal. Sebelum jumlah akun
+	// bertambah, gejala ini tidak kelihatan karena perjalanannya pendek.
+	refusalSwitches := 0
+	const maxRefusalAccountSwitches = 2
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB, ctx)
 		if len(setCookie) > 0 && cookieID > 0 {
@@ -1065,14 +1079,15 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 			}
 			// Penolakan generik biasanya menempel pada satu akun pada satu
 			// waktu, bukan pada request-nya. Mengulang di akun yang sama sering
-			// ditolak lagi; pindah akun dulu.
-			if attempt < maxRefusalRetries-1 {
+			// ditolak lagi; pindah akun dulu - tapi terbatas, lihat
+			// maxRefusalAccountSwitches.
+			if refusalSwitches < maxRefusalAccountSwitches {
 				if switched := switchToAccountSupporting(mc, tried, &acct, &cookieStr,
 					&cookieID, &cookieLabel, &sapisid, &xsrfToken); switched {
-					logf("[model] %s ditolak generik di akun sebelumnya, pindah ke akun #%d",
-						modelLabel(mc), cookieID)
+					refusalSwitches++
+					logf("[model] %s ditolak generik di akun sebelumnya, pindah ke akun #%d (%d dari maks %d)",
+						modelLabel(mc), cookieID, refusalSwitches, maxRefusalAccountSwitches)
 					lastErr = nil
-					attempt--
 					continue
 				}
 			}
