@@ -52,6 +52,11 @@ type RuntimeConfig struct {
 	// Google menyajikan model lain. Makin pendek makin cepat pulih, tapi makin
 	// sering mengulang perjalanan 10-20 detik ke akun yang sama.
 	ModelDenyTTLSec int `json:"model_deny_ttl_sec"`
+	// ContentIdleSec: berapa lama setelah baris berisi terakhir tanpa isian baru
+	// sebelum stream ditutup. Melindungi dari koneksi yang dipegang Google
+	// berjam-jam setelah jawaban selesai, sambil hanya mengirim heartbeat.
+	// Default 25 detik.
+	ContentIdleSec int `json:"content_idle_sec"`
 	// MultiTurn 开启后走 Gemini 原生 conversation_id 服务端多轮：按历史前缀识别续接，
 	// 命中就只发最新一句、历史留服务端，绕开单请求字节墙。匿名/登录都行，见 conversation.go。
 	// 默认 false（保持现有"每轮拼全量 prompt"行为）。实测多轮不放大上下文窗口，只让长
@@ -104,6 +109,7 @@ func initRuntimeConfig() {
 		MaxPromptBytes:    cfg.MaxPromptBytes,
 		DenyWaitBudgetSec: cfg.DenyWaitBudgetSec,
 		ModelDenyTTLSec:   cfg.ModelDenyTTLSec,
+		ContentIdleSec:    cfg.ContentIdleSec,
 		MultiTurn:         cfg.MultiTurn,
 
 		AutoDeleteConversation: cfg.AutoDeleteConversation,

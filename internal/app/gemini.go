@@ -1567,6 +1567,33 @@ func isPreambleLine(line string) bool {
 	return true
 }
 
+// isHeartbeatLine menjawab apakah satu baris adalah frame kendali Google yang
+// tidak membawa isi jawaban.
+//
+// Selama model berpikir, Google mengirim `[{"37":[n]}]` tiap ~60 detik. Baris ini
+// dulu ikut me-reset penjaga stall, sehingga penjaga itu tak pernah jenuh — dan
+// stream yang jawabannya sudah selesai tetap terbuka 200-621 detik sampai
+// akhirnya ditutup Google. Ini satu-satunya sebab "TTFB 250ms tapi total 621s"
+// untuk jawaban selebar 2 karakter.
+func isHeartbeatLine(line string) bool {
+	s := strings.TrimSpace(line)
+	return strings.HasPrefix(s, `[{"37"`) || strings.HasPrefix(s, `[{"38"`)
+}
+
+// contentIdleAfter adalah berapa lama setelah baris berisi terakhir sebelum
+// stream ditutup, kalau ternyata hanya heartbeat yang datang sesudahnya.
+//
+// Kuncinya: cutoff ini DIHITUNG dari isi terakhir, bukan dari heartbeat. Jadi
+// model yang berpikir lama tetap aman (deltanya terus datang), tapi model yang
+// sudah menjawab dan hanya mengirim heartbeat tidak akan menggantung.
+func contentIdleAfter() time.Duration {
+	sec := rtCfg().ContentIdleSec
+	if sec <= 0 {
+		sec = 25
+	}
+	return time.Duration(sec) * time.Second
+}
+
 // stallAfter() adalah berapa lama tanpa byte baru sebelum upstream dianggap macet.
 //
 // Harus di atas interval heartbeat Google (terukur 60 detik: frame
@@ -1606,6 +1633,14 @@ func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, in
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
 
+	// Terakhir kali baris yang MEMBWA ISI tiba. Heartbeat `[{"37":[n]}]` dan
+	// frame kendali lain TIDAK menghitung: kalau ikut dihitung, idle timer
+	// tak pernah jenuh (heartbeat tiap ~60s < stallAfter), stream terus
+	// terbuka berjam-jam setelah jawaban utuh, dan satu permintaan butuh
+	// 209-621 detik hanya untuk membalas "OK" (2 karakter).
+	var lastContent atomic.Int64
+	lastContent.Store(time.Now().UnixNano())
+
 	// Pengawas: kalau tidak ada baris baru selama stallAfter(), tutup body.
 	// Menutup body adalah satu-satunya cara membangunkan sc.Scan() yang sedang
 	// memblokir di read; errornya lalu terbaca sebagai stall.
@@ -1629,10 +1664,37 @@ func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, in
 		}
 	}()
 
+	// Penjaga jawaban-selesai: kalau jawaban sudah mengalir dan SEJAK ITU hanya
+	// heartbeat/kendali yang datang selama contentIdleAfter(), tutup stream.
+	// 3.1 Pro dan 3.8 Flash memegang koneksi terbuka berjam-jam setelah jawaban
+	// 2 karakter selesai, sambil Google mengirim heartbeat tiap ~60 detik.
+	stopIdle := make(chan struct{})
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopIdle:
+				return
+			case <-t.C:
+				idle := time.Duration(time.Now().UnixNano() - lastContent.Load())
+				if idle > contentIdleAfter() {
+					stalled.Store(true)
+					_ = r.Close()
+					return
+				}
+			}
+		}
+	}()
+
 	var ttfb int64 = -1
 	for sc.Scan() {
-		lastActivity.Store(time.Now().UnixNano())
 		line := sc.Text()
+		// Heartbeat dan frame kendali tidak dihitung aktivitas.
+		if isHeartbeatLine(line) {
+			continue
+		}
+		lastActivity.Store(time.Now().UnixNano())
 		// TTFB = saat frame isi pertama tiba, bukan saat pembungkus tiba.
 		if ttfb < 0 && !isPreambleLine(line) {
 			ttfb = time.Since(start).Milliseconds()
@@ -1640,12 +1702,17 @@ func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, in
 		if onLine != nil {
 			onLine(line)
 		}
+		// Baris ini menghasilkan isi? kalau ya, itu aktivitas jawaban.
+		if !isPreambleLine(line) && !isStreamTerminator(line) {
+			lastContent.Store(time.Now().UnixNano())
+		}
 		// Frame penutup: jawaban sudah utuh, berhenti membaca. Koneksi tidak
 		// akan ditutup upstream, jadi menunggu = menggantung sampai timeout.
 		if isStreamTerminator(line) {
 			break
 		}
 	}
+	close(stopIdle)
 	close(stopWatch)
 
 	if ttfb < 0 {

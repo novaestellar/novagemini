@@ -60,6 +60,10 @@ type Config struct {
 	// lain. Default 120: cukup melewati lonjakan, cukup pendek supaya model yang
 	// hanya dimiliki sedikit akun (3.8 Flash, Argon) tidak mati 5 menit penuh.
 	ModelDenyTTLSec int `json:"model_deny_ttl_sec"`
+	// ContentIdleSec: berapa detik tanpa isian baru setelah baris berisi terakhir
+	// sebelum stream ditutup. Melindungi dari koneksi yang dipegang Google
+	// berjam-jam setelah jawaban selesai, sambil hanya mengirim heartbeat.
+	ContentIdleSec int `json:"content_idle_sec"`
 	// 是否走 Gemini 原生 conversation_id 服务端多轮。默认 false，见 conversation.go。
 	MultiTurn bool `json:"multi_turn"`
 	// 出完结果是否自动删掉 gemini.google.com 上留下的这条会话（#19，rpc GzXR5e）。
@@ -120,6 +124,7 @@ func defaultConfig() Config {
 		MaxPromptBytes:         128000,
 		DenyWaitBudgetSec:      10,
 		ModelDenyTTLSec:        120,
+		ContentIdleSec:         25,
 		MultiTurn:              false,
 		AutoDeleteConversation: false,
 		AnonFirst:              false,
