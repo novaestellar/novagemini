@@ -283,6 +283,40 @@ func pickProxyPreferring(preferID int64) (Proxy, bool) {
 	return Proxy{}, false
 }
 
+// isProxyFault menjawab apakah sebuah kegagalan boleh dihitung sebagai kesalahan
+// PROXY (dan karena itu menambah fail_count sampai circuit-breaker menendangnya).
+//
+// Kenapa perlu: recordProxyResult dulu menaikkan fail_count untuk SEMUA kegagalan,
+// termasuk "upstream downgraded" dan "canned refusal" - dua-duanya jawaban model,
+// bukan soal jalur keluar. Akibatnya seluruh 16 proxy berakhir fail>=5 sekaligus
+// dan, karena fallback_direct=false, setiap permintaan ditolak 429 tanpa sempat
+// keluar sama sekali. Terukur 2026-11-06 14:33: brd-10 last_error berisi
+// "upstream downgraded: requested gemini-music" - bukti kegagalan model dihitung
+// sebagai kegagalan proxy.
+//
+// Aturan yang dipakai sama seperti markCookieByStatus untuk akun: hanya kegagalan
+// TRANSPORT yang dihitung. Error tingkat model (downgrade, penolakan, kuota, 429
+// dari Google, konteks dibatalkan klien) bukan salah proxy.
+func isProxyFault(errStr string) bool {
+	msg := strings.ToLower(errStr)
+	for _, m := range []string{
+		"proxyconnect",
+		"dial tcp",
+		"connectex",
+		"connection refused",
+		"connection reset",
+		"i/o timeout",
+		"no such host",
+		"tls handshake",
+		"proxy authentication",
+	} {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // recordProxyResult 回写一次请求的结果，并同步更新内存里那一条。
 //
 // 只改内存里的那一条，不整表重读：这个函数每个请求都会调，重读一次就是一次全表
@@ -296,11 +330,17 @@ func recordProxyResult(id int64, success bool, errStr string) {
 		return
 	}
 	now := time.Now().Unix()
+	// Kegagalan tingkat model tidak menambah fail_count: last_error tetap dicatat
+	// supaya terlihat di panel, tapi circuit-breaker tidak boleh tergelincir oleh
+	// jawaban Google.
+	counts := success || isProxyFault(errStr)
 	if success {
 		_, _ = getDB().Exec(`UPDATE proxies SET fail_count=0, last_used=?, last_error='' WHERE id=?`, now, id)
-	} else {
+	} else if counts {
 		_, _ = getDB().Exec(`UPDATE proxies SET fail_count=fail_count+1, last_used=?, last_error=? WHERE id=?`,
 			now, errStr, id)
+	} else {
+		_, _ = getDB().Exec(`UPDATE proxies SET last_used=?, last_error=? WHERE id=?`, now, errStr, id)
 	}
 	proxyMu.Lock()
 	for i := range proxyCache {
@@ -312,7 +352,9 @@ func recordProxyResult(id int64, success bool, errStr string) {
 			proxyCache[i].FailCount = 0
 			proxyCache[i].LastError = ""
 		} else {
-			proxyCache[i].FailCount++
+			if counts {
+				proxyCache[i].FailCount++
+			}
 			proxyCache[i].LastError = errStr
 		}
 		break
