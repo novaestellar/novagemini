@@ -820,7 +820,14 @@ func pickCookieAccountFor(mc ModelConfig, skip map[int64]bool) (*CookieAccount, 
 				// tidak menolaknya, dia menjawab dengan model lain - terukur
 				// 3.8 diturunkan ke 3.6. Itu jawaban salah yang tidak bisa
 				// dibedakan klien, jadi lebih baik tidak memilih sama sekali.
-				if modelRequiresPaidAccount(mc) {
+				//
+				// Sama untuk model media (image/music/video/canvas): di sana
+				// kemampuan adalah cap spesifik (VIDEO_GENERATION, IMAGEN_4,
+				// CANVAS, kuota musik), dan akun tanpa cap itu dijawab model
+				// chat biasa. Terukur 2026-11-06: gemini-video mendarat di akun
+				// tanpa VIDEO_GENERATION lalu "upstream downgraded ... served
+				// 3.8 Flash". Usaha terakhir tidak berlaku di sini.
+				if modelRequiresPaidAccount(mc) || mc.Tool > 0 {
 					continue
 				}
 				// Daftar model bukan bukti: lima akun berlabel tier=free terbukti
