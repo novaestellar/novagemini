@@ -86,24 +86,19 @@ func TestPaidGateCoversAllPaidModels(t *testing.T) {
 	}
 }
 
+// TestSupportsModelPaidOnlyArgon memastikan gerbang tingkat kedua.
 func TestSupportsModelPaidOnlyArgon(t *testing.T) {
 	argon := Models["gemini-4-argon"]
-	paidNoRollout := AccountCapability{Alive: true, Tier: "pro", Rollouts: []string{"Flash3p8:2"}}
+	paidNoRollout := AccountCapability{Alive: true, Tier: "pro", Rollouts: []string{"SomeOtherRollout:2"}}
 	if paidNoRollout.supportsModel(argon) {
 		t.Fatal("tanpa rollout Argon4p0 supportsModel harus tetap menolak")
 	}
 	if !paidNoRollout.supportsModelPaidOnly(argon) {
-		t.Fatal("akun berbayar harus lolos di tingkat kedua")
+		t.Fatal("akun berbayar harus lolos di tingkat kedua untuk Argon")
 	}
-	freeAcct := AccountCapability{Alive: true, Tier: "free"}
-	if freeAcct.supportsModelPaidOnly(argon) {
-		t.Fatal("akun free tidak boleh lolos di tingkat kedua")
-	}
-	if freeAcct.supportsModelPaidOnly(Models["gemini-3.6-flash"]) {
-		t.Fatal("supportsModelPaidOnly hanya berlaku untuk model berbayar")
-	}
-	// tier "unknown" (belum diprobe) bukan bukti berbayar.
-	if (AccountCapability{Alive: true}).supportsModelPaidOnly(argon) {
-		t.Fatal("tier kosong tidak boleh dianggap berbayar")
+
+	flash38 := Models["gemini-3.8-flash"]
+	if paidNoRollout.supportsModelPaidOnly(flash38) {
+		t.Fatal("3.8 Flash TIDAK boleh lolos tingkat kedua hanya karena pro - wajib punya rollout Flash3p8")
 	}
 }

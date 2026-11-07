@@ -446,8 +446,13 @@ func (c AccountCapability) supportsModel(mc ModelConfig) bool {
 // mengoreksi: Argon, 3.1 Pro, 3.7, 3.8 semuanya khusus akun pro.
 func (c AccountCapability) supportsModelPaidOnly(mc ModelConfig) bool {
 	switch mc.HexID {
-	case hexArgon4, hexPro31, hexFlash38:
+	case hexArgon4, hexPro31:
 		return c.Tier == "pro"
+	case hexFlash38:
+		// 3.8 Flash BUKAN model tier pro umum; ini rollout sangat ketat di Google.
+		// Akun pro biasa tanpa rollout 3.8 akan menyajikan 3.6 Flash / ditolak.
+		// Jadi HANYA akun yang punya rollout eksplisit yang boleh melayani 3.8.
+		return false
 	}
 	return false
 }
