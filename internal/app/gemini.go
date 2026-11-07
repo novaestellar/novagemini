@@ -858,7 +858,7 @@ func streamGenerateWithFiles(ctx context.Context, prompt, latest string, mc Mode
 	const maxRefusalAccountSwitches = 2
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB, ctx)
+		statusCode, raw, ttfb, setCookie, err := doGeminiRequest(endpoint, body, geminiHeaders, proxyURL, lineCB, mc.Tool, ctx)
 		if len(setCookie) > 0 && cookieID > 0 {
 			if merged := mergeSetCookie(cookieStr, setCookie); merged != cookieStr {
 				cookieStr = merged
@@ -1467,7 +1467,7 @@ func buildGeminiHeaders(cookieStr, sapisid, hexID string) map[string]string {
 // __Secure-3PSIDCC，浏览器收下再带回去。一直发旧值的客户端会被判定为过期会话，
 // 实测号活一两小时就失效 —— 所以这些必须收下来并写回账号。
 func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL string,
-	onLine func(string), ctxs ...context.Context) (int, []byte, int64, []string, error) {
+	onLine func(string), tool int, ctxs ...context.Context) (int, []byte, int64, []string, error) {
 	sendAt := time.Now()
 	ctx := optCtx(ctxs)
 	if proxyURL != "" {
@@ -1489,7 +1489,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 			return 0, nil, 0, nil, err
 		}
 		defer resp.Body.Close()
-		raw, ttfb, err := readBody(resp.Body, onLine, sendAt)
+		raw, ttfb, err := readBody(resp.Body, onLine, sendAt, tool)
 		if err != nil {
 			return resp.StatusCode, nil, ttfb, resp.Header.Values("Set-Cookie"), err
 		}
@@ -1513,7 +1513,7 @@ func doGeminiRequest(endpoint, body string, headers map[string]string, proxyURL 
 		return 0, nil, 0, nil, err
 	}
 	defer resp.Body.Close()
-	raw, ttfb, err := readBody(resp.Body, onLine, sendAt)
+	raw, ttfb, err := readBody(resp.Body, onLine, sendAt, tool)
 	if err != nil {
 		return resp.StatusCode, nil, ttfb, resp.Header.Values("Set-Cookie"), err
 	}
@@ -1603,17 +1603,26 @@ func contentIdleAfter() time.Duration {
 // Efeknya: request yang benar-benar macet berhenti di ~2 menit, bukan menunggu
 // batas total 720 detik. Klien menerima error yang bisa ditindaklanjuti jauh
 // lebih cepat, dan akun berikutnya bisa langsung dicoba.
-func stallAfter() time.Duration {
-	// request_timeout_sec di config dipakai sebagai batas DIAM, bukan batas
-	// total. Model 3.7/3.8 bisa butuh 200-700 detik untuk menjawab, dan
-	// memotongnya di tengah jalan berarti membuang jawaban yang sedang jalan.
-	// Yang benar-benar merugikan adalah upstream yang berhenti mengirim apa
-	// pun: itu yang dipotong di sini.
+// stallAfterFor() adalah berapa lama tanpa byte baru sebelum upstream dianggap macet,
+// disesuaikan per jenis model.
+func stallAfterFor(tool int) time.Duration {
 	sec := rtCfg().RequestTimeout
 	if sec < 60 {
 		sec = 60
 	}
+	// Khusus video (Veo): proses generasi di server Google memakan waktu 3-8 menit
+	// di mana Google menahan koneksi tanpa mengirim data byte baru terus-menerus.
+	// Batas idle standar (180s) memutus koneksi sebelum render selesai ("idle 3m0s").
+	if tool == toolVideo {
+		if sec < 600 {
+			sec = 600 // 10 menit khusus video
+		}
+	}
 	return time.Duration(sec) * time.Second
+}
+
+func stallAfter() time.Duration {
+	return stallAfterFor(0)
 }
 
 // errUpstreamStall menandai pembacaan yang dihentikan karena upstream berhenti
@@ -1625,7 +1634,7 @@ func (e *errUpstreamStall) Error() string {
 	return fmt.Sprintf("upstream stopped sending data (idle %s)", e.Idle.Round(time.Second))
 }
 
-func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, int64, error) {
+func readBody(r io.ReadCloser, onLine func(string), start time.Time, tool int) ([]byte, int64, error) {
 	var buf bytes.Buffer
 	sc := bufio.NewScanner(io.TeeReader(r, &buf))
 	// 单帧可能很大（实测见过 40 万字节的响应），默认 64KB 上限不够。
@@ -1655,7 +1664,7 @@ func readBody(r io.ReadCloser, onLine func(string), start time.Time) ([]byte, in
 				return
 			case <-t.C:
 				idle := time.Duration(time.Now().UnixNano() - lastActivity.Load())
-				if idle > stallAfter() {
+				if idle > stallAfterFor(tool) {
 					stalled.Store(true)
 					_ = r.Close()
 					return
